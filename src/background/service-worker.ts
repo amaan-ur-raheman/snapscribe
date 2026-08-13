@@ -289,46 +289,54 @@ async function downloadCapture(
   const resolvedQuality = (quality ?? settings.jpegQuality) / 100;
   const safeFilename = sanitizeFilename(withExtension(filename, extensionFor(resolvedFormat)));
 
-  let temporaryUrl: string | null = null;
   try {
-    const { url, temporary } = await exportToDownloadUrl(dataUrl, resolvedFormat, resolvedQuality);
-    if (temporary) temporaryUrl = url;
+    const url = await exportToDownloadUrl(dataUrl, resolvedFormat, resolvedQuality);
     const downloadId = await chrome.downloads.download({ url, filename: safeFilename });
-    // Blob URLs must be revoked once the download has consumed them.
-    if (temporaryUrl) scheduleRevoke(downloadId, temporaryUrl);
     return { ok: true, downloadId };
   } catch (err) {
-    if (temporaryUrl) URL.revokeObjectURL(temporaryUrl);
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
 /**
- * Produce a URL chrome.downloads can fetch for the requested format.
- * PNG passes through as a data: URL; JPEG/PDF are converted in the worker
- * via OffscreenCanvas, so no DOM is needed. PDF splits tall captures into
- * one page per chunk.
+ * Produce a data URL chrome.downloads can fetch for the requested format.
+ *
+ * Extension service workers have no URL.createObjectURL (a documented MV3
+ * limitation), so JPEG/PDF output is base64 data URLs. PNG passes through
+ * unchanged. Conversion runs on OffscreenCanvas — no DOM needed — and PDF
+ * splits tall captures into one page per chunk.
  */
 async function exportToDownloadUrl(
   dataUrl: string,
   format: ExportFormat,
   quality: number,
-): Promise<{ url: string; temporary: boolean }> {
+): Promise<string> {
   switch (format) {
     case 'png':
-      return { url: dataUrl, temporary: false };
+      return dataUrl;
     case 'jpeg': {
       const bytes = await dataUrlToJpegBytes(dataUrl, quality);
-      return {
-        url: URL.createObjectURL(new Blob([bytes], { type: 'image/jpeg' })),
-        temporary: true,
-      };
+      return `data:image/jpeg;base64,${bytesToBase64(bytes)}`;
     }
     case 'pdf': {
       const pages = await splitIntoPdfPages(dataUrl, { quality });
-      return { url: URL.createObjectURL(generatePdf(pages)), temporary: true };
+      const bytes = new Uint8Array(await generatePdf(pages).arrayBuffer());
+      return `data:application/pdf;base64,${bytesToBase64(bytes)}`;
     }
   }
+}
+
+/**
+ * Base64-encode bytes for a data URL. Chunked so large captures don't blow
+ * the call stack building one giant String.fromCharCode(...) argument list.
+ */
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
 }
 
 /** Re-encode a PNG data URL as JPEG bytes (white underlay for any alpha). */
@@ -354,24 +362,6 @@ async function dataUrlToJpegBytes(
 /** Replace any trailing extension with the export format's extension. */
 function withExtension(filename: string, ext: string): string {
   return `${filename.replace(/\.[a-z0-9]+$/i, '')}.${ext}`;
-}
-
-/** Blob URLs backing a download, revoked once that download finishes/fails. */
-const pendingObjectUrls = new Map<number, string>();
-
-chrome.downloads.onChanged.addListener((delta) => {
-  const state = delta.state?.current;
-  if (state === 'complete' || state === 'interrupted') {
-    const url = pendingObjectUrls.get(delta.id);
-    if (url) {
-      URL.revokeObjectURL(url);
-      pendingObjectUrls.delete(delta.id);
-    }
-  }
-});
-
-function scheduleRevoke(downloadId: number, url: string): void {
-  pendingObjectUrls.set(downloadId, url);
 }
 
 /** Strip path separators / traversal so a filename can't escape the Downloads dir. */
