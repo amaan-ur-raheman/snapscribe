@@ -1,20 +1,23 @@
 /**
- * Content script — runs in every page the user could capture. Coordinates
- * full-page captures for the service worker: scrolling, waiting for the page
- * to settle (so lazy content can render), and hiding/restoring fixed &
- * sticky elements so they don't duplicate across stitched strips.
+ * Content script — runs in every page the user could capture. Handles:
+ * - Full-page captures: scrolling, settling, hiding fixed/sticky elements
+ * - Region drag-select and element picker overlays, viewport cropping, and
+ *   the saved-toast
  *
- * All messages are members of the ContentRequest union. Messages not
+ * All messages are members of the ContentRequest union; messages not
  * addressed to the content script are ignored so other listeners can
  * respond.
  */
 
-import { isContentRequest } from '../types/messages';
+import { buildFilename } from '../lib/filename';
+import { loadImage } from '../lib/image';
+import { getSettings } from '../lib/storage';
+import { isContentRequest, sendRuntimeRequest } from '../types/messages';
 import type {
   ContentRequest,
   PrepareResponse,
-  RestoreResponse,
   ScrollResponse,
+  SimpleOkResponse,
 } from '../types/messages';
 
 /** How long to wait after a scroll for lazy-loaded content to render. */
@@ -23,16 +26,28 @@ const LAZY_RENDER_DELAY_MS = 300;
 const SCROLL_SETTLE_TIMEOUT_MS = 1000;
 /** Attribute + selector pair used to hide fixed/sticky elements reversibly. */
 const HIDDEN_ATTR = 'data-snapscribe-hidden';
+/** Toast element id and how long it stays visible. */
+const TOAST_ID = 'snapscribe-toast';
+const TOAST_DURATION_MS = 3500;
 
 interface HiddenElement {
   el: HTMLElement;
   rect: DOMRect;
 }
 
+/** A rectangle in viewport CSS pixels. */
+interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 const hiddenElements: HiddenElement[] = [];
 let hiddenStyle: HTMLStyleElement | null = null;
 let initialScrollY = 0;
 let hasInitialized = false;
+let toastTimer: number | undefined;
 
 chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
   if (!isContentRequest(message)) return; // not addressed to the content script
@@ -46,7 +61,7 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
 
 async function handleContentRequest(
   msg: ContentRequest,
-): Promise<PrepareResponse | ScrollResponse | RestoreResponse> {
+): Promise<PrepareResponse | ScrollResponse | SimpleOkResponse> {
   switch (msg.type) {
     case 'FULL_PAGE_PREPARE':
       return preparePage();
@@ -54,8 +69,16 @@ async function handleContentRequest(
       return scrollToAndSettle(msg.y);
     case 'FULL_PAGE_RESTORE':
       return restorePage();
+    case 'REGION_SELECT':
+      return selectRegion();
+    case 'ELEMENT_SELECT':
+      return pickElement();
   }
 }
+
+// ---------------------------------------------------------------------------
+// Full-page helpers
+// ---------------------------------------------------------------------------
 
 function preparePage(): PrepareResponse {
   const dpr = window.devicePixelRatio || 1;
@@ -94,7 +117,7 @@ async function scrollToAndSettle(y: number): Promise<ScrollResponse> {
   return { ok: true, scrollY: settledY };
 }
 
-function restorePage(): RestoreResponse {
+function restorePage(): SimpleOkResponse {
   if (hiddenStyle) {
     hiddenStyle.remove();
     hiddenStyle = null;
@@ -173,4 +196,222 @@ function nextFrame(): Promise<void> {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ---------------------------------------------------------------------------
+// Region drag-select
+// ---------------------------------------------------------------------------
+
+function selectRegion(): Promise<SimpleOkResponse> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'snapscribe-overlay';
+    const selection = document.createElement('div');
+    selection.className = 'snapscribe-selection';
+    selection.style.display = 'none';
+    const sizeLabel = document.createElement('div');
+    sizeLabel.className = 'snapscribe-size-label';
+    sizeLabel.style.display = 'none';
+    overlay.append(selection, sizeLabel);
+    document.documentElement.appendChild(overlay);
+
+    let dragStart: { x: number; y: number } | null = null;
+    let rect: Rect | null = null;
+    let finished = false;
+
+    const finish = (cancelled: boolean): void => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      resolve({ ok: true });
+      if (!cancelled && rect) void completeSelectionCapture(rect);
+    };
+
+    const onMouseDown = (e: MouseEvent): void => {
+      e.preventDefault(); // stop the page from selecting text
+      dragStart = { x: e.clientX, y: e.clientY };
+      rect = { x: dragStart.x, y: dragStart.y, width: 0, height: 0 };
+      updateSelection();
+    };
+    const onMouseMove = (e: MouseEvent): void => {
+      if (!dragStart) return;
+      rect = normalizeRect(dragStart, { x: e.clientX, y: e.clientY });
+      updateSelection();
+    };
+    const onMouseUp = (e: MouseEvent): void => {
+      if (!dragStart) return;
+      rect = normalizeRect(dragStart, { x: e.clientX, y: e.clientY });
+      dragStart = null;
+      finish(false);
+    };
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') finish(true);
+    };
+    const onContextMenu = (e: MouseEvent): void => e.preventDefault();
+
+    overlay.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('keydown', onKeyDown);
+    overlay.addEventListener('contextmenu', onContextMenu);
+
+    const updateSelection = (): void => {
+      if (!rect) return;
+      selection.style.display = 'block';
+      selection.style.left = `${rect.x}px`;
+      selection.style.top = `${rect.y}px`;
+      selection.style.width = `${rect.width}px`;
+      selection.style.height = `${rect.height}px`;
+      sizeLabel.style.display = 'block';
+      sizeLabel.textContent = `${Math.round(rect.width)} × ${Math.round(rect.height)}`;
+      sizeLabel.style.left = `${rect.x}px`;
+      sizeLabel.style.top = rect.y >= 24 ? `${rect.y - 22}px` : `${rect.y + rect.height + 6}px`;
+    };
+
+    const cleanup = (): void => {
+      overlay.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      window.removeEventListener('keydown', onKeyDown);
+      overlay.removeEventListener('contextmenu', onContextMenu);
+      overlay.remove();
+    };
+  });
+}
+
+function normalizeRect(a: { x: number; y: number }, b: { x: number; y: number }): Rect {
+  return {
+    x: Math.min(a.x, b.x),
+    y: Math.min(a.y, b.y),
+    width: Math.abs(b.x - a.x),
+    height: Math.abs(b.y - a.y),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Element picker
+// ---------------------------------------------------------------------------
+
+function pickElement(): Promise<SimpleOkResponse> {
+  return new Promise((resolve) => {
+    const highlight = document.createElement('div');
+    highlight.className = 'snapscribe-highlight';
+    highlight.style.display = 'none';
+    document.documentElement.appendChild(highlight);
+
+    let rect: Rect | null = null;
+    let finished = false;
+
+    const finish = (cancelled: boolean): void => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      resolve({ ok: true });
+      if (!cancelled && rect) void completeSelectionCapture(rect);
+    };
+
+    const onMouseMove = (e: MouseEvent): void => {
+      const el = elementAt(e.clientX, e.clientY);
+      if (!el) {
+        highlight.style.display = 'none';
+        rect = null;
+        return;
+      }
+      const bounds = el.getBoundingClientRect();
+      rect = { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+      highlight.style.display = 'block';
+      highlight.style.left = `${bounds.x}px`;
+      highlight.style.top = `${bounds.y}px`;
+      highlight.style.width = `${bounds.width}px`;
+      highlight.style.height = `${bounds.height}px`;
+    };
+    const onClick = (e: MouseEvent): void => {
+      e.preventDefault();
+      e.stopPropagation();
+      finish(false);
+    };
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') finish(true);
+    };
+
+    document.addEventListener('mousemove', onMouseMove, true);
+    document.addEventListener('click', onClick, true);
+    window.addEventListener('keydown', onKeyDown);
+
+    const cleanup = (): void => {
+      document.removeEventListener('mousemove', onMouseMove, true);
+      document.removeEventListener('click', onClick, true);
+      window.removeEventListener('keydown', onKeyDown);
+      highlight.remove();
+    };
+  });
+}
+
+/** The topmost element under the cursor (ignoring tiny or hidden ones). */
+function elementAt(x: number, y: number): HTMLElement | null {
+  const el = document.elementFromPoint(x, y);
+  if (!(el instanceof HTMLElement)) return null;
+  const rect = el.getBoundingClientRect();
+  if (rect.width < 2 || rect.height < 2) return null;
+  return el;
+}
+
+// ---------------------------------------------------------------------------
+// Capture the selected rect (shared by region + element)
+// ---------------------------------------------------------------------------
+
+async function completeSelectionCapture(rect: Rect): Promise<void> {
+  try {
+    const response = await sendRuntimeRequest({ type: 'CAPTURE_VIEWPORT' });
+    if (!response.ok) {
+      showToast(response.error, true);
+      return;
+    }
+    const dataUrl = await cropViewport(response.dataUrl, rect);
+    const settings = await getSettings();
+    const filename = buildFilename(window.location.href, settings.filenamePattern, 'png');
+    const saved = await sendRuntimeRequest({ type: 'DOWNLOAD_CAPTURE', dataUrl, filename });
+    showToast(saved.ok ? `Saved ${filename}` : saved.error, !saved.ok);
+  } catch (err) {
+    showToast(err instanceof Error ? err.message : String(err), true);
+  }
+}
+
+/** Crop the captured viewport (device pixels) to the selection (CSS px). */
+async function cropViewport(dataUrl: string, rect: Rect): Promise<string> {
+  const dpr = window.devicePixelRatio || 1;
+  const x = Math.round(rect.x * dpr);
+  const y = Math.round(rect.y * dpr);
+  const width = Math.max(1, Math.round(rect.width * dpr));
+  const height = Math.max(1, Math.round(rect.height * dpr));
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas 2D is not available');
+  const image = await loadImage(dataUrl);
+  ctx.drawImage(image, -x, -y);
+  return canvas.toDataURL('image/png');
+}
+
+// ---------------------------------------------------------------------------
+// Saved-toast
+// ---------------------------------------------------------------------------
+
+function showToast(message: string, isError: boolean): void {
+  let toast = document.getElementById(TOAST_ID);
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = TOAST_ID;
+    toast.className = 'snapscribe-toast';
+    document.documentElement.appendChild(toast);
+  }
+  toast.textContent = message;
+  toast.classList.toggle('snapscribe-toast-error', isError);
+  toast.classList.add('snapscribe-toast-visible');
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(
+    () => toast?.classList.remove('snapscribe-toast-visible'),
+    TOAST_DURATION_MS,
+  );
 }
