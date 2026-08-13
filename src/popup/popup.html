@@ -28,6 +28,25 @@
     </section>
 
     <div class="actions">
+      <div class="export-controls">
+        <div class="format-selector" role="group" aria-label="Export format">
+          <button id="format-png" class="format-option" type="button" aria-pressed="true">
+            PNG
+          </button>
+          <button id="format-jpeg" class="format-option" type="button" aria-pressed="false">
+            JPEG
+          </button>
+          <button id="format-pdf" class="format-option" type="button" aria-pressed="false">
+            PDF
+          </button>
+        </div>
+        <label id="quality-row" class="quality hidden" for="quality">
+          <span>Quality</span>
+          <input id="quality" type="range" min="1" max="100" value="90" />
+          <output id="quality-value" for="quality">90</output>
+        </label>
+      </div>
+      <button id="copy" class="action action-secondary" type="button" disabled>Copy image</button>
       <button id="download" class="action" type="button" disabled>Download PNG</button>
     </div>
 
