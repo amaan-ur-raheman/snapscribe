@@ -49,10 +49,17 @@ export interface CaptureViewportMsg {
 /** Export an existing capture through chrome.downloads. (Phase 1) */
 export interface DownloadCaptureMsg {
   type: 'DOWNLOAD_CAPTURE';
-  /** PNG/JPEG data URL of the image to save. */
+  /** PNG data URL of the image to save. */
   dataUrl: string;
   /** Desired filename (extension included); sanitized by the receiver. */
   filename: string;
+  /**
+   * Export format. Omitted by legacy callers — the worker falls back to the
+   * user's default format setting. (Phase 4)
+   */
+  format?: ExportFormat;
+  /** JPEG quality, 0-100. Omitted by legacy callers — falls back to settings. (Phase 4) */
+  quality?: number;
 }
 
 export type RuntimeRequest =

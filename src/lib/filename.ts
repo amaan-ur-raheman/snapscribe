@@ -2,6 +2,20 @@
  * Filename helpers shared by the popup and the content script.
  */
 
+import type { ExportFormat } from '../types/messages';
+
+/** File extension for an export format (jpeg → .jpg). */
+export function extensionFor(format: ExportFormat): string {
+  switch (format) {
+    case 'png':
+      return 'png';
+    case 'jpeg':
+      return 'jpg';
+    case 'pdf':
+      return 'pdf';
+  }
+}
+
 export function hostnameOf(url: string): string {
   try {
     return new URL(url).hostname;
