@@ -376,6 +376,11 @@ function elementAt(x: number, y: number): HTMLElement | null {
 // ---------------------------------------------------------------------------
 
 async function completeSelectionCapture(rect: Rect): Promise<void> {
+  // The selection UI was just removed from the DOM; wait for the page to
+  // repaint, or captureVisibleTab grabs the previous composited frame and
+  // the hint pill / mask / highlight end up in the image.
+  await nextFrame();
+  await nextFrame();
   try {
     const response = await sendRuntimeRequest({ type: 'CAPTURE_VIEWPORT' });
     if (!response.ok) {
