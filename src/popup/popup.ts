@@ -56,6 +56,10 @@ async function onCaptureFullPageClick(): Promise<void> {
     setStatus('No active tab to capture.', true);
     return;
   }
+  if (!isCapturableUrl(tab.url)) {
+    setStatus('SnapScribe cannot run on this page (browser-internal page).', true);
+    return;
+  }
   setStatus('Capturing full page…');
   captureFullPageButton.disabled = true;
   try {
@@ -115,6 +119,30 @@ function presentCapture(result: Presentable): void {
 async function currentTab(): Promise<chrome.tabs.Tab | undefined> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return tab;
+}
+
+const BLOCKED_PROTOCOLS = [
+  'chrome:',
+  'chrome-extension:',
+  'edge:',
+  'about:',
+  'devtools:',
+  'view-source:',
+];
+
+/** True when content scripts can run on this URL (browser-internal pages excluded). */
+function isCapturableUrl(url: string | undefined): boolean {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    if (BLOCKED_PROTOCOLS.includes(parsed.protocol)) return false;
+    if (parsed.hostname === 'chrome.google.com' && parsed.pathname.startsWith('/webstore')) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function hostnameOf(url: string): string {
