@@ -314,6 +314,7 @@ function pickElement(): Promise<SimpleOkResponse> {
     document.documentElement.append(highlight, hint);
 
     let rect: Rect | null = null;
+    let hoveredEl: HTMLElement | null = null;
     let finished = false;
 
     const finish = (cancelled: boolean): void => {
@@ -321,16 +322,38 @@ function pickElement(): Promise<SimpleOkResponse> {
       finished = true;
       cleanup();
       resolve({ ok: true });
-      if (!cancelled && rect) void completeSelectionCapture(rect);
+      if (cancelled || !rect) return;
+      const original = rect;
+      void (async () => {
+        // A partially-visible element would crop blank canvas below the fold.
+        // Scroll it fully into view first (unless it's already fully visible,
+        // so an on-screen element never makes the page jump).
+        if (hoveredEl && !isFullyVisible(hoveredEl)) {
+          hoveredEl.scrollIntoView({ block: 'center', inline: 'nearest' });
+          await nextFrame();
+          await nextFrame();
+          const bounds = hoveredEl.getBoundingClientRect();
+          await completeSelectionCapture({
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: bounds.height,
+          });
+          return;
+        }
+        await completeSelectionCapture(original);
+      })();
     };
 
     const onMouseMove = (e: MouseEvent): void => {
       const el = elementAt(e.clientX, e.clientY);
       if (!el) {
+        hoveredEl = null;
         highlight.style.display = 'none';
         rect = null;
         return;
       }
+      hoveredEl = el;
       const bounds = el.getBoundingClientRect();
       rect = { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
       highlight.style.display = 'block';
@@ -342,6 +365,14 @@ function pickElement(): Promise<SimpleOkResponse> {
     const onClick = (e: MouseEvent): void => {
       e.preventDefault();
       e.stopPropagation();
+      // A click can land without a prior mousemove (touch, or a fast click
+      // right after the mode activates) — resolve the element from the event.
+      const el = hoveredEl ?? elementAt(e.clientX, e.clientY);
+      if (el) {
+        hoveredEl = el;
+        const bounds = el.getBoundingClientRect();
+        rect = { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+      }
       finish(false);
     };
     const onKeyDown = (e: KeyboardEvent): void => {
@@ -369,6 +400,14 @@ function elementAt(x: number, y: number): HTMLElement | null {
   const rect = el.getBoundingClientRect();
   if (rect.width < 2 || rect.height < 2) return null;
   return el;
+}
+
+/** Whether the element's bounds lie entirely within the current viewport. */
+function isFullyVisible(el: HTMLElement): boolean {
+  const r = el.getBoundingClientRect();
+  return (
+    r.top >= 0 && r.left >= 0 && r.bottom <= window.innerHeight && r.right <= window.innerWidth
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -400,16 +439,21 @@ async function completeSelectionCapture(rect: Rect): Promise<void> {
 /** Crop the captured viewport (device pixels) to the selection (CSS px). */
 async function cropViewport(dataUrl: string, rect: Rect): Promise<string> {
   const dpr = window.devicePixelRatio || 1;
-  const x = Math.round(rect.x * dpr);
-  const y = Math.round(rect.y * dpr);
-  const width = Math.max(1, Math.round(rect.width * dpr));
-  const height = Math.max(1, Math.round(rect.height * dpr));
+  const image = await loadImage(dataUrl);
+  // Clamp the crop to the captured image: a selection that extends past the
+  // viewport (an element taller than the screen, a drag past the edge) would
+  // otherwise export blank canvas below the fold.
+  const x = Math.max(0, Math.round(rect.x * dpr));
+  const y = Math.max(0, Math.round(rect.y * dpr));
+  const right = Math.min(Math.round((rect.x + rect.width) * dpr), image.width);
+  const bottom = Math.min(Math.round((rect.y + rect.height) * dpr), image.height);
+  const width = Math.max(1, right - x);
+  const height = Math.max(1, bottom - y);
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Canvas 2D is not available');
-  const image = await loadImage(dataUrl);
   ctx.drawImage(image, -x, -y);
   return canvas.toDataURL('image/png');
 }
