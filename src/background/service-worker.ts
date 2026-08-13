@@ -14,7 +14,9 @@ import type {
   FixedComposite,
   FullPageCaptureResponse,
   RuntimeRequest,
+  SimpleOkResponse,
   StitchedStrip,
+  ViewportCaptureResponse,
 } from '../types/messages';
 
 /** Safety cap on the number of stitched strips (infinite-scroll guard). */
@@ -39,12 +41,12 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   if (!isRuntimeRequest(message)) {
     sendResponse({ ok: false, error: 'Unknown message' });
     return;
   }
-  handleRequest(message)
+  handleRequest(message, sender.tab?.id)
     .then(sendResponse)
     .catch((err: unknown) =>
       sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) }),
@@ -54,17 +56,55 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
 
 async function handleRequest(
   msg: RuntimeRequest,
-): Promise<CaptureResponse | DownloadResponse | FullPageCaptureResponse> {
+  senderTabId: number | undefined,
+): Promise<
+  | CaptureResponse
+  | DownloadResponse
+  | FullPageCaptureResponse
+  | ViewportCaptureResponse
+  | SimpleOkResponse
+> {
   switch (msg.type) {
     case 'CAPTURE_VISIBLE':
       return captureVisible(msg.tabId);
     case 'CAPTURE_FULL_PAGE':
       return captureFullPage(msg.tabId);
+    case 'START_REGION_SELECTION':
+      return startSelection(msg.tabId, 'REGION_SELECT');
+    case 'START_ELEMENT_SELECTION':
+      return startSelection(msg.tabId, 'ELEMENT_SELECT');
+    case 'CAPTURE_VIEWPORT':
+      return captureViewport(senderTabId);
     case 'DOWNLOAD_CAPTURE':
       return downloadCapture(msg.dataUrl, msg.filename);
-    // Remaining modes land in later phases; fail loudly rather than silently.
-    default:
-      return { ok: false, error: `Message type not implemented yet: ${msg.type}` };
+  }
+}
+
+/** Forward a selection request to the tab's content script. */
+async function startSelection(
+  tabId: number,
+  mode: 'REGION_SELECT' | 'ELEMENT_SELECT',
+): Promise<SimpleOkResponse> {
+  try {
+    await sendToContent(tabId, { type: mode });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** Capture the current viewport for the content script to crop. */
+async function captureViewport(tabId: number | undefined): Promise<ViewportCaptureResponse> {
+  if (tabId === undefined) {
+    return { ok: false, error: 'Could not determine the tab to capture.' };
+  }
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    await throttleCapture();
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+    return { ok: true, dataUrl };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 

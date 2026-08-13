@@ -1,3 +1,4 @@
+import { buildFilename, hostnameOf } from '../lib/filename';
 import { stitchFullPage } from '../lib/stitcher';
 import { getSettings } from '../lib/storage';
 import { sendRuntimeRequest } from '../types/messages';
@@ -11,6 +12,8 @@ const $ = <T extends HTMLElement>(id: string): T => {
 
 const captureVisibleButton = $<HTMLButtonElement>('capture-visible');
 const captureFullPageButton = $<HTMLButtonElement>('capture-full-page');
+const captureRegionButton = $<HTMLButtonElement>('capture-region');
+const captureElementButton = $<HTMLButtonElement>('capture-element');
 const downloadButton = $<HTMLButtonElement>('download');
 const resultSection = $<HTMLElement>('result');
 const previewImage = $<HTMLImageElement>('preview');
@@ -25,6 +28,8 @@ let lastCapture: Presentable | null = null;
 
 captureVisibleButton.addEventListener('click', () => void onCaptureVisibleClick());
 captureFullPageButton.addEventListener('click', () => void onCaptureFullPageClick());
+captureRegionButton.addEventListener('click', () => void onRegionClick());
+captureElementButton.addEventListener('click', () => void onElementClick());
 downloadButton.addEventListener('click', () => void onDownloadClick());
 
 async function onCaptureVisibleClick(): Promise<void> {
@@ -82,6 +87,36 @@ async function onCaptureFullPageClick(): Promise<void> {
   } finally {
     captureFullPageButton.disabled = false;
   }
+}
+
+async function onRegionClick(): Promise<void> {
+  await beginSelection('START_REGION_SELECTION');
+}
+
+async function onElementClick(): Promise<void> {
+  await beginSelection('START_ELEMENT_SELECTION');
+}
+
+/**
+ * Hand the capture over to the content script and close the popup — the
+ * popup would lose focus the moment the user interacts with the page.
+ * The response is moot (the popup is closing), so errors are ignored.
+ */
+async function beginSelection(
+  type: 'START_REGION_SELECTION' | 'START_ELEMENT_SELECTION',
+): Promise<void> {
+  const tab = await currentTab();
+  if (!tab?.id) {
+    setStatus('No active tab to capture.', true);
+    return;
+  }
+  if (!isCapturableUrl(tab.url)) {
+    setStatus('SnapScribe cannot run on this page (browser-internal page).', true);
+    return;
+  }
+  setStatus('Select an area on the page…');
+  void sendRuntimeRequest({ type, tabId: tab.id }).catch(() => undefined);
+  window.setTimeout(() => window.close(), 60);
 }
 
 async function onDownloadClick(): Promise<void> {
@@ -143,31 +178,6 @@ function isCapturableUrl(url: string | undefined): boolean {
   } catch {
     return false;
   }
-}
-
-function hostnameOf(url: string): string {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return url;
-  }
-}
-
-/** Expand the configured {site}/{date}/{time} pattern into a filename. */
-function buildFilename(sourceUrl: string, pattern: string, ext: string): string {
-  const site = hostnameOf(sourceUrl).replace(/\./g, '-');
-  const now = new Date();
-  const date = [now.getFullYear(), pad(now.getMonth() + 1), pad(now.getDate())].join('-');
-  const time = [pad(now.getHours()), pad(now.getMinutes()), pad(now.getSeconds())].join('-');
-  const base = pattern
-    .replace(/\{site\}/g, site || 'page')
-    .replace(/\{date\}/g, date)
-    .replace(/\{time\}/g, time);
-  return `${base || `snapscribe-${date}-${time}`}.${ext}`;
-}
-
-function pad(value: number): string {
-  return String(value).padStart(2, '0');
 }
 
 function setStatus(message: string, isError = false): void {

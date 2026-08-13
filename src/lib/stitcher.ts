@@ -3,6 +3,7 @@
  * data URL. Runs in the popup (DOM context) — service workers have no canvas.
  */
 
+import { loadImage } from './image';
 import type { FullPageStitch } from '../types/messages';
 
 export async function stitchFullPage(stitch: FullPageStitch): Promise<string> {
@@ -38,13 +39,4 @@ export async function stitchFullPage(stitch: FullPageStitch): Promise<string> {
   }
 
   return canvas.toDataURL('image/png');
-}
-
-function loadImage(dataUrl: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error('Failed to decode a captured strip'));
-    image.src = dataUrl;
-  });
 }
