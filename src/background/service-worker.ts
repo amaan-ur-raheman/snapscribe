@@ -8,6 +8,8 @@ import { DEFAULT_SETTINGS } from '../lib/storage';
 import { isRuntimeRequest, sendContentRequest } from '../types/messages';
 import type {
   CaptureResponse,
+  ContentRequest,
+  ContentResponseFor,
   DownloadResponse,
   FixedComposite,
   FullPageCaptureResponse,
@@ -19,6 +21,14 @@ import type {
 const MAX_STRIPS = 100;
 /** Chrome's canvas area limit is ~268M pixels; keep margin for safety. */
 const MAX_TOTAL_PIXELS = 200_000_000;
+/**
+ * Chrome allows at most 2 captureVisibleTab calls per second per extension
+ * (MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND, Chrome 92+). 600ms keeps us
+ * comfortably under that even when capture flows run back to back.
+ */
+const CAPTURE_INTERVAL_MS = 600;
+
+let lastCaptureAt = 0;
 
 // Seed settings once so reads never return a partial object.
 chrome.runtime.onInstalled.addListener(() => {
@@ -61,6 +71,7 @@ async function handleRequest(
 async function captureVisible(tabId: number): Promise<CaptureResponse> {
   const tab = await chrome.tabs.get(tabId);
   // captureVisibleTab keys on window id, not tab id.
+  await throttleCapture();
   const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
   const { width, height } = pngDimensions(dataUrl);
   return {
@@ -92,16 +103,17 @@ async function captureFullPage(tabId: number): Promise<FullPageCaptureResponse> 
 
   try {
     // 1. Start at the top of the page.
-    await sendContentRequest(tabId, { type: 'FULL_PAGE_SCROLL', y: 0 });
+    await sendToContent(tabId, { type: 'FULL_PAGE_SCROLL', y: 0 });
 
     // 2. Reference strip with fixed/sticky elements still visible — it
     //    supplies the pixels composited back over the clean stitch.
+    await throttleCapture();
     const reference = await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
 
     // 3. Measure the page and hide fixed/sticky elements.
-    const prep = await sendContentRequest(tabId, { type: 'FULL_PAGE_PREPARE' });
+    const prep = await sendToContent(tabId, { type: 'FULL_PAGE_PREPARE' });
     if (!prep.ok) {
-      await sendContentRequest(tabId, { type: 'FULL_PAGE_RESTORE' });
+      await sendToContent(tabId, { type: 'FULL_PAGE_RESTORE' });
       return prep;
     }
     const { clientWidth, scrollHeight, innerHeight, dpr, fixedRects } = prep;
@@ -109,7 +121,7 @@ async function captureFullPage(tabId: number): Promise<FullPageCaptureResponse> 
     const width = Math.round(clientWidth * dpr);
     const height = Math.round(scrollHeight * dpr);
     if (width * height > MAX_TOTAL_PIXELS) {
-      await sendContentRequest(tabId, { type: 'FULL_PAGE_RESTORE' });
+      await sendToContent(tabId, { type: 'FULL_PAGE_RESTORE' });
       return {
         ok: false,
         error: `Page is too large to capture (${width} × ${height} device pixels exceeds the canvas limit).`,
@@ -121,12 +133,13 @@ async function captureFullPage(tabId: number): Promise<FullPageCaptureResponse> 
     let y = 0;
     let previousY = -1;
     for (let i = 0; i < MAX_STRIPS; i++) {
-      const step = await sendContentRequest(tabId, { type: 'FULL_PAGE_SCROLL', y });
+      const step = await sendToContent(tabId, { type: 'FULL_PAGE_SCROLL', y });
       if (!step.ok) {
-        await sendContentRequest(tabId, { type: 'FULL_PAGE_RESTORE' });
+        await sendToContent(tabId, { type: 'FULL_PAGE_RESTORE' });
         return step;
       }
       if (i > 0 && step.scrollY <= previousY) break; // page won't scroll further
+      await throttleCapture();
       const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
       strips.push({ y: Math.round(step.scrollY * dpr), dataUrl });
       if (step.scrollY + innerHeight >= scrollHeight - 0.5) break; // reached the bottom
@@ -135,7 +148,7 @@ async function captureFullPage(tabId: number): Promise<FullPageCaptureResponse> 
     }
 
     // 5. Put the page back the way we found it.
-    await sendContentRequest(tabId, { type: 'FULL_PAGE_RESTORE' });
+    await sendToContent(tabId, { type: 'FULL_PAGE_RESTORE' });
 
     if (strips.length === 0) {
       return { ok: false, error: 'No strips were captured; the page may not be scrollable.' };
@@ -168,11 +181,55 @@ async function captureFullPage(tabId: number): Promise<FullPageCaptureResponse> 
   } catch (err) {
     // Best-effort cleanup so the page isn't left with hidden headers.
     try {
-      await sendContentRequest(tabId, { type: 'FULL_PAGE_RESTORE' });
+      await sendToContent(tabId, { type: 'FULL_PAGE_RESTORE' });
     } catch {
       // Tab may have closed — nothing more we can do.
     }
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Chrome throws this when chrome.tabs.sendMessage finds no content script
+ * listening in the target tab.
+ */
+function isReceivingEndMissing(err: unknown): boolean {
+  return err instanceof Error && err.message.includes('Receiving end does not exist');
+}
+
+/**
+ * Send a typed request to the tab's content script, injecting the script
+ * first when the tab predates the extension (pages loaded before install or
+ * reload have no content script until they reload).
+ */
+async function sendToContent<T extends ContentRequest>(
+  tabId: number,
+  msg: T,
+): Promise<ContentResponseFor<T>> {
+  try {
+    return await sendContentRequest(tabId, msg);
+  } catch (err) {
+    if (!isReceivingEndMissing(err)) throw err;
+    await ensureContentScript(tabId);
+    return await sendContentRequest(tabId, msg);
+  }
+}
+
+/**
+ * Inject the content script into a tab. The path comes from the built
+ * manifest, so it works even though crxjs hashes the bundled file name.
+ */
+async function ensureContentScript(tabId: number): Promise<void> {
+  const scripts = chrome.runtime.getManifest().content_scripts?.[0]?.js;
+  if (!scripts || scripts.length === 0) {
+    throw new Error('No content script is registered in the manifest.');
+  }
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: scripts });
+  } catch {
+    throw new Error(
+      'SnapScribe cannot run on this page — it may be a browser-internal page (chrome://, the Web Store) or the page may need a reload. Reload the page and try again.',
+    );
   }
 }
 
@@ -202,6 +259,19 @@ async function readDevicePixelRatio(tabId: number): Promise<number> {
   } catch {
     return 1;
   }
+}
+
+/** Wait so consecutive captureVisibleTab calls stay at least CAPTURE_INTERVAL_MS apart. */
+async function throttleCapture(): Promise<void> {
+  const elapsed = Date.now() - lastCaptureAt;
+  if (elapsed < CAPTURE_INTERVAL_MS) {
+    await delay(CAPTURE_INTERVAL_MS - elapsed);
+  }
+  lastCaptureAt = Date.now();
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Read width/height straight from the PNG header (no DOM needed in the worker). */
