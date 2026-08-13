@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
+    "test": "bun test",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "icons": "bun run scripts/gen-icons.mjs",

@@ -22,6 +22,7 @@ const formatPdfButton = $<HTMLButtonElement>('format-pdf');
 const qualityRow = $<HTMLElement>('quality-row');
 const qualityInput = $<HTMLInputElement>('quality');
 const qualityValue = $<HTMLElement>('quality-value');
+const captureCard = $<HTMLElement>('capture-card');
 const resultSection = $<HTMLElement>('result');
 const previewImage = $<HTMLImageElement>('preview');
 const dimensionsLabel = $<HTMLElement>('meta-dimensions');
@@ -70,6 +71,10 @@ async function onCaptureVisibleClick(): Promise<void> {
   const tab = await currentTab();
   if (!tab?.id) {
     setStatus('No active tab to capture.', true);
+    return;
+  }
+  if (!isCapturableUrl(tab.url)) {
+    setStatus('SnapScribe cannot run on this page (browser-internal page).', true);
     return;
   }
   setStatus('Capturing…');
@@ -215,6 +220,7 @@ function presentCapture(result: Presentable): void {
   previewImage.src = result.dataUrl;
   dimensionsLabel.textContent = `${result.width} × ${result.height}px`;
   siteLabel.textContent = hostnameOf(result.sourceUrl);
+  captureCard.classList.remove('hidden');
   resultSection.classList.remove('hidden');
   downloadButton.disabled = false;
   copyButton.disabled = false;

@@ -32,6 +32,11 @@ const MAX_TOTAL_PIXELS = 200_000_000;
  * comfortably under that even when capture flows run back to back.
  */
 const CAPTURE_INTERVAL_MS = 600;
+/** Overlap adjacent viewport captures to hide scroll/DPR seam rounding. */
+const SCROLL_OVERLAP_PX = 64;
+/** Give an injected module content script time to register its listener. */
+const CONTENT_SCRIPT_RETRY_DELAY_MS = 50;
+const CONTENT_SCRIPT_RETRIES = 5;
 
 let lastCaptureAt = 0;
 
@@ -49,7 +54,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
     sendResponse({ ok: false, error: 'Unknown message' });
     return;
   }
-  handleRequest(message, sender.tab?.id)
+  handleRequest(message, sender.tab?.id, sender.id)
     .then(sendResponse)
     .catch((err: unknown) =>
       sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) }),
@@ -60,6 +65,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
 async function handleRequest(
   msg: RuntimeRequest,
   senderTabId: number | undefined,
+  senderId: string | undefined,
 ): Promise<
   | CaptureResponse
   | DownloadResponse
@@ -69,18 +75,34 @@ async function handleRequest(
 > {
   switch (msg.type) {
     case 'CAPTURE_VISIBLE':
+      if (!isExtensionUiMessage(senderId, senderTabId)) return unauthorizedResponse();
       return captureVisible(msg.tabId);
     case 'CAPTURE_FULL_PAGE':
+      if (!isExtensionUiMessage(senderId, senderTabId)) return unauthorizedResponse();
       return captureFullPage(msg.tabId);
     case 'START_REGION_SELECTION':
+      if (!isExtensionUiMessage(senderId, senderTabId)) return unauthorizedResponse();
       return startSelection(msg.tabId, 'REGION_SELECT');
     case 'START_ELEMENT_SELECTION':
+      if (!isExtensionUiMessage(senderId, senderTabId)) return unauthorizedResponse();
       return startSelection(msg.tabId, 'ELEMENT_SELECT');
     case 'CAPTURE_VIEWPORT':
+      if (senderTabId === undefined) return unauthorizedResponse();
       return captureViewport(senderTabId);
     case 'DOWNLOAD_CAPTURE':
       return downloadCapture(msg.dataUrl, msg.filename, msg.format, msg.quality);
   }
+}
+
+function isExtensionUiMessage(
+  senderId: string | undefined,
+  senderTabId: number | undefined,
+): boolean {
+  return senderId === chrome.runtime.id && senderTabId === undefined;
+}
+
+function unauthorizedResponse(): { ok: false; error: string } {
+  return { ok: false, error: 'This capture request is not authorized.' };
 }
 
 /** Forward a selection request to the tab's content script. */
@@ -160,9 +182,11 @@ async function captureFullPage(tabId: number): Promise<FullPageCaptureResponse> 
       return prep;
     }
     const { clientWidth, scrollHeight, innerHeight, dpr, fixedRects } = prep;
-
-    const width = Math.round(clientWidth * dpr);
-    const height = Math.round(scrollHeight * dpr);
+    // This is only a safety estimate. The first clean strip establishes the
+    // actual bitmap scale after scrollbar suppression and layout settling.
+    let captureDpr = dpr;
+    let width = Math.round(clientWidth * dpr);
+    let height = Math.round(scrollHeight * captureDpr);
     if (width * height > MAX_TOTAL_PIXELS) {
       await sendToContent(tabId, { type: 'FULL_PAGE_RESTORE' });
       return {
@@ -175,6 +199,8 @@ async function captureFullPage(tabId: number): Promise<FullPageCaptureResponse> 
     const strips: StitchedStrip[] = [];
     let y = 0;
     let previousY = -1;
+    let previousBottomPx = 0;
+    let reachedBottom = false;
     for (let i = 0; i < MAX_STRIPS; i++) {
       const step = await sendToContent(tabId, { type: 'FULL_PAGE_SCROLL', y });
       if (!step.ok) {
@@ -184,10 +210,42 @@ async function captureFullPage(tabId: number): Promise<FullPageCaptureResponse> 
       if (i > 0 && step.scrollY <= previousY) break; // page won't scroll further
       await throttleCapture();
       const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
-      strips.push({ y: Math.round(step.scrollY * dpr), dataUrl });
-      if (step.scrollY + innerHeight >= scrollHeight - 0.5) break; // reached the bottom
+      const size = pngDimensions(dataUrl);
+      if (i === 0) {
+        // Calibrate from the first strip captured in the final hidden state;
+        // the pre-hide reference is only used for fixed-element pixels.
+        captureDpr = size.height / innerHeight;
+        width = size.width;
+        height = Math.round(scrollHeight * captureDpr);
+        if (width * height > MAX_TOTAL_PIXELS) {
+          await sendToContent(tabId, { type: 'FULL_PAGE_RESTORE' });
+          return {
+            ok: false,
+            error: `Page is too large to capture (${width} × ${height} device pixels exceeds the canvas limit).`,
+          };
+        }
+      } else if (
+        size.width !== width ||
+        Math.abs(size.height - Math.round(innerHeight * captureDpr)) > 1
+      ) {
+        await sendToContent(tabId, { type: 'FULL_PAGE_RESTORE' });
+        return {
+          ok: false,
+          error: 'The page layout changed during capture. Please try again after it settles.',
+        };
+      }
+      const stripY = Math.round(step.scrollY * captureDpr);
+      const overlap = i === 0 ? 0 : Math.max(0, previousBottomPx - stripY);
+      const sourceY = Math.min(size.height, Math.round(overlap));
+      const sourceHeight = Math.max(0, size.height - sourceY);
+      strips.push({ destY: stripY + sourceY, sourceY, sourceHeight, dataUrl });
+      previousBottomPx = Math.max(previousBottomPx, stripY + size.height);
+      if (step.scrollY + innerHeight >= scrollHeight - 0.5) {
+        reachedBottom = true;
+        break;
+      }
       previousY = step.scrollY;
-      y = step.scrollY + innerHeight;
+      y = step.scrollY + Math.max(1, innerHeight - SCROLL_OVERLAP_PX);
     }
 
     // 5. Put the page back the way we found it.
@@ -196,16 +254,28 @@ async function captureFullPage(tabId: number): Promise<FullPageCaptureResponse> 
     if (strips.length === 0) {
       return { ok: false, error: 'No strips were captured; the page may not be scrollable.' };
     }
+    if (!reachedBottom) {
+      return {
+        ok: false,
+        error: `Page is too tall to capture in one operation (maximum ${MAX_STRIPS} viewport strips).`,
+      };
+    }
 
     // 6. Fixed/sticky elements visible in the first viewport get composited
     //    back once, cropped from the reference strip at their screen position.
     const composites: FixedComposite[] = fixedRects
-      .filter((rect) => rect.y + rect.height > 0 && rect.y < innerHeight)
+      .filter(
+        (rect) =>
+          (rect.position === 'fixed' || rect.position === 'sticky') &&
+          rect.y + rect.height > 0 &&
+          rect.y < innerHeight &&
+          rect.y < innerHeight / 2,
+      )
       .map((rect) => ({
-        x: Math.round(rect.x * dpr),
-        y: Math.round(rect.y * dpr),
-        width: Math.round(rect.width * dpr),
-        height: Math.round(rect.height * dpr),
+        x: Math.round(rect.x * captureDpr),
+        y: Math.round(rect.y * captureDpr),
+        width: Math.round(rect.width * captureDpr),
+        height: Math.round(rect.height * captureDpr),
         sourceDataUrl: reference,
       }));
 
@@ -214,7 +284,7 @@ async function captureFullPage(tabId: number): Promise<FullPageCaptureResponse> 
       stitch: {
         width,
         height,
-        dpr,
+        dpr: captureDpr,
         strips,
         composites,
         sourceUrl: tab.url ?? '',
@@ -254,8 +324,19 @@ async function sendToContent<T extends ContentRequest>(
   } catch (err) {
     if (!isReceivingEndMissing(err)) throw err;
     await ensureContentScript(tabId);
-    return await sendContentRequest(tabId, msg);
+    for (let attempt = 0; attempt < CONTENT_SCRIPT_RETRIES; attempt++) {
+      try {
+        return await sendContentRequest(tabId, msg);
+      } catch (retryErr) {
+        if (!isReceivingEndMissing(retryErr) || attempt === CONTENT_SCRIPT_RETRIES - 1) {
+          throw retryErr;
+        }
+        await delay(CONTENT_SCRIPT_RETRY_DELAY_MS);
+      }
+    }
   }
+
+  throw new Error('Could not connect to the page content script.');
 }
 
 /**
@@ -287,7 +368,8 @@ async function downloadCapture(
   const settings = await getSettings();
   const resolvedFormat = format ?? settings.defaultFormat;
   const resolvedQuality = (quality ?? settings.jpegQuality) / 100;
-  const safeFilename = sanitizeFilename(withExtension(filename, extensionFor(resolvedFormat)));
+  const extension = extensionFor(resolvedFormat);
+  const safeFilename = sanitizeFilename(withExtension(filename, extension), extension);
 
   try {
     const url = await exportToDownloadUrl(dataUrl, resolvedFormat, resolvedQuality);
@@ -365,12 +447,12 @@ function withExtension(filename: string, ext: string): string {
 }
 
 /** Strip path separators / traversal so a filename can't escape the Downloads dir. */
-function sanitizeFilename(name: string): string {
+function sanitizeFilename(name: string, extension: string): string {
   const cleaned = name
     .replace(/[\\/:*?"<>|]/g, '-')
     .replace(/\.\./g, '')
     .replace(/^[/\\-]+/, '');
-  return cleaned.length > 0 ? cleaned : `snapscribe-${Date.now()}.png`;
+  return cleaned.length > 0 ? cleaned : `snapscribe-${Date.now()}.${extension}`;
 }
 
 /** Read the page's devicePixelRatio; falls back to 1 when injection fails. */
