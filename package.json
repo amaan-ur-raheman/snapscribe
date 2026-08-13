@@ -1,0 +1,29 @@
+{
+  "name": "snapscribe",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SnapScribe — on-device screenshot capture for Chrome (Manifest V3). All processing stays in the browser.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "icons": "bun run scripts/gen-icons.mjs",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@crxjs/vite-plugin": "^2.7.1",
+    "@eslint/js": "^10.0.1",
+    "@types/chrome": "^0.2.5",
+    "eslint": "^10.8.1",
+    "globals": "^17.11.0",
+    "prettier": "^3.9.6",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.67.0",
+    "vite": "^8.2.1"
+  }
+}
