@@ -70,24 +70,21 @@ export interface CaptureResult {
   timestamp: number;
 }
 
-export type CaptureResponse =
-  | { ok: true; result: CaptureResult }
-  | { ok: false; error: string };
+export type CaptureResponse = { ok: true; result: CaptureResult } | { ok: false; error: string };
 
-export type DownloadResponse =
-  | { ok: true; downloadId?: number }
-  | { ok: false; error: string };
+export type DownloadResponse = { ok: true; downloadId?: number } | { ok: false; error: string };
 
 /** Union of every response the service worker can send back. */
 export type RuntimeResponse = CaptureResponse | DownloadResponse;
 
 /** Maps a request type to the response the service worker will send back. */
-export type ResponseFor<T extends RuntimeRequest> =
-  T extends { type: 'CAPTURE_VISIBLE' | 'CAPTURE_FULL_PAGE' | 'CAPTURE_REGION' | 'CAPTURE_ELEMENT' }
-    ? CaptureResponse
-    : T extends { type: 'DOWNLOAD_CAPTURE' }
-      ? DownloadResponse
-      : never;
+export type ResponseFor<T extends RuntimeRequest> = T extends {
+  type: 'CAPTURE_VISIBLE' | 'CAPTURE_FULL_PAGE' | 'CAPTURE_REGION' | 'CAPTURE_ELEMENT';
+}
+  ? CaptureResponse
+  : T extends { type: 'DOWNLOAD_CAPTURE' }
+    ? DownloadResponse
+    : never;
 
 /** Narrow an unknown payload (from onMessage) to a RuntimeRequest. */
 export function isRuntimeRequest(value: unknown): value is RuntimeRequest {
@@ -95,7 +92,13 @@ export function isRuntimeRequest(value: unknown): value is RuntimeRequest {
   const type = (value as { type?: unknown }).type;
   return (
     typeof type === 'string' &&
-    ['CAPTURE_VISIBLE', 'CAPTURE_FULL_PAGE', 'CAPTURE_REGION', 'CAPTURE_ELEMENT', 'DOWNLOAD_CAPTURE'].includes(type)
+    [
+      'CAPTURE_VISIBLE',
+      'CAPTURE_FULL_PAGE',
+      'CAPTURE_REGION',
+      'CAPTURE_ELEMENT',
+      'DOWNLOAD_CAPTURE',
+    ].includes(type)
   );
 }
 

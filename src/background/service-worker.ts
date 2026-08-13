@@ -69,7 +69,10 @@ async function downloadCapture(dataUrl: string, filename: string): Promise<Downl
 
 /** Strip path separators / traversal so a filename can't escape the Downloads dir. */
 function sanitizeFilename(name: string): string {
-  const cleaned = name.replace(/[\\/:*?"<>|]/g, '-').replace(/\.\./g, '').replace(/^[/\\-]+/, '');
+  const cleaned = name
+    .replace(/[\\/:*?"<>|]/g, '-')
+    .replace(/\.\./g, '')
+    .replace(/^[/\\-]+/, '');
   return cleaned.length > 0 ? cleaned : `snapscribe-${Date.now()}.png`;
 }
 
