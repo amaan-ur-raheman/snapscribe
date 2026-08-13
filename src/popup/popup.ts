@@ -1,8 +1,7 @@
+import { stitchFullPage } from '../lib/stitcher';
 import { getSettings } from '../lib/storage';
 import { sendRuntimeRequest } from '../types/messages';
-import type { CaptureResponse } from '../types/messages';
-
-type SuccessCapture = Extract<CaptureResponse, { ok: true }>['result'];
+import type { CaptureResult } from '../types/messages';
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -10,7 +9,8 @@ const $ = <T extends HTMLElement>(id: string): T => {
   return el as T;
 };
 
-const captureButton = $<HTMLButtonElement>('capture-visible');
+const captureVisibleButton = $<HTMLButtonElement>('capture-visible');
+const captureFullPageButton = $<HTMLButtonElement>('capture-full-page');
 const downloadButton = $<HTMLButtonElement>('download');
 const resultSection = $<HTMLElement>('result');
 const previewImage = $<HTMLImageElement>('preview');
@@ -18,36 +18,65 @@ const dimensionsLabel = $<HTMLElement>('meta-dimensions');
 const siteLabel = $<HTMLElement>('meta-site');
 const statusLabel = $<HTMLElement>('status');
 
-let lastCapture: SuccessCapture | null = null;
+/** Enough of a capture to preview and export. */
+type Presentable = Pick<CaptureResult, 'dataUrl' | 'width' | 'height' | 'sourceUrl'>;
 
-captureButton.addEventListener('click', () => void onCaptureClick());
+let lastCapture: Presentable | null = null;
+
+captureVisibleButton.addEventListener('click', () => void onCaptureVisibleClick());
+captureFullPageButton.addEventListener('click', () => void onCaptureFullPageClick());
 downloadButton.addEventListener('click', () => void onDownloadClick());
 
-async function onCaptureClick(): Promise<void> {
+async function onCaptureVisibleClick(): Promise<void> {
   const tab = await currentTab();
   if (!tab?.id) {
     setStatus('No active tab to capture.', true);
     return;
   }
   setStatus('Capturing…');
-  captureButton.disabled = true;
+  captureVisibleButton.disabled = true;
   try {
     const response = await sendRuntimeRequest({ type: 'CAPTURE_VISIBLE', tabId: tab.id });
     if (!response.ok) {
       setStatus(response.error, true);
       return;
     }
-    lastCapture = response.result;
-    previewImage.src = response.result.dataUrl;
-    dimensionsLabel.textContent = `${response.result.width} × ${response.result.height}px`;
-    siteLabel.textContent = hostnameOf(response.result.sourceUrl);
-    resultSection.classList.remove('hidden');
-    downloadButton.disabled = false;
+    presentCapture(response.result);
     setStatus('Captured ✓');
   } catch (error) {
     setStatus(errorMessage(error), true);
   } finally {
-    captureButton.disabled = false;
+    captureVisibleButton.disabled = false;
+  }
+}
+
+async function onCaptureFullPageClick(): Promise<void> {
+  const tab = await currentTab();
+  if (!tab?.id) {
+    setStatus('No active tab to capture.', true);
+    return;
+  }
+  setStatus('Capturing full page…');
+  captureFullPageButton.disabled = true;
+  try {
+    const response = await sendRuntimeRequest({ type: 'CAPTURE_FULL_PAGE', tabId: tab.id });
+    if (!response.ok) {
+      setStatus(response.error, true);
+      return;
+    }
+    setStatus('Stitching strips…');
+    const dataUrl = await stitchFullPage(response.stitch);
+    presentCapture({
+      dataUrl,
+      width: response.stitch.width,
+      height: response.stitch.height,
+      sourceUrl: response.stitch.sourceUrl,
+    });
+    setStatus('Captured ✓');
+  } catch (error) {
+    setStatus(errorMessage(error), true);
+  } finally {
+    captureFullPageButton.disabled = false;
   }
 }
 
@@ -72,6 +101,15 @@ async function onDownloadClick(): Promise<void> {
   } finally {
     downloadButton.disabled = false;
   }
+}
+
+function presentCapture(result: Presentable): void {
+  lastCapture = result;
+  previewImage.src = result.dataUrl;
+  dimensionsLabel.textContent = `${result.width} × ${result.height}px`;
+  siteLabel.textContent = hostnameOf(result.sourceUrl);
+  resultSection.classList.remove('hidden');
+  downloadButton.disabled = false;
 }
 
 async function currentTab(): Promise<chrome.tabs.Tab | undefined> {
