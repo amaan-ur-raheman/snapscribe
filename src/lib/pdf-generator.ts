@@ -22,6 +22,9 @@ export interface PdfPage {
 const MAX_PAGE_HEIGHT_PX = 2000;
 /** PDF unit conversion: 1 CSS/device px = 0.75 pt. */
 const PX_TO_PT = 0.75;
+/** A4 portrait in points (210 × 297 mm). Every PDF page is this size. */
+const A4_WIDTH_PT = 595.28;
+const A4_HEIGHT_PT = 841.89;
 
 export interface SplitOptions {
   maxPageHeightPx?: number;
@@ -66,13 +69,24 @@ export async function splitIntoPdfPages(
   }
 }
 
+export interface PdfPageOptions {
+  /** Page size in points; defaults to A4 portrait (595.28 × 841.89). */
+  pageWidthPt?: number;
+  pageHeightPt?: number;
+}
+
 /**
  * Assemble a minimal multi-page PDF from JPEG page images.
+ *
+ * Every page is an A4 sheet; each image is scaled to fit inside it (contain)
+ * and centered, so any capture aspect ratio produces clean pages.
  *
  * Object layout (N pages): 1 catalog, 2 page tree, then per page p:
  * 3p+3 Page, 3p+4 image XObject, 3p+5 content stream.
  */
-export function generatePdf(pages: PdfPage[]): Blob {
+export function generatePdf(pages: PdfPage[], options: PdfPageOptions = {}): Blob {
+  const pageWidthPt = options.pageWidthPt ?? A4_WIDTH_PT;
+  const pageHeightPt = options.pageHeightPt ?? A4_HEIGHT_PT;
   const out = new ByteWriter();
   const objectOffsets: number[] = [];
 
@@ -90,14 +104,23 @@ export function generatePdf(pages: PdfPage[]): Blob {
     const pageObj = 3 + i * 3;
     const imageObj = pageObj + 1;
     const contentObj = pageObj + 2;
-    const widthPt = pt(page.widthPx);
-    const heightPt = pt(page.heightPx);
 
-    // Page object. The content stream scales the unit image to the full page.
+    // Scale to fit the A4 sheet (contain) and center it on the page. The cm
+    // matrix must carry the DRAWN size in points (image pt × scale), not the
+    // scale factor — the image's unit square maps to exactly those points.
+    const imgWidthPt = page.widthPx * PX_TO_PT;
+    const imgHeightPt = page.heightPx * PX_TO_PT;
+    const scale = Math.min(pageWidthPt / imgWidthPt, pageHeightPt / imgHeightPt);
+    const drawnWidthPt = imgWidthPt * scale;
+    const drawnHeightPt = imgHeightPt * scale;
+    const x = ((pageWidthPt - drawnWidthPt) / 2).toFixed(2);
+    const y = ((pageHeightPt - drawnHeightPt) / 2).toFixed(2);
+
+    // Page object — every page is the same A4 MediaBox.
     objectOffsets.push(out.length);
     out.ascii(
       `${pageObj} 0 obj\n` +
-        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${widthPt} ${heightPt}] ` +
+        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidthPt.toFixed(2)} ${pageHeightPt.toFixed(2)}] ` +
         `/Resources << /XObject << /Im${i} ${imageObj} 0 R >> >> /Contents ${contentObj} 0 R >>\n` +
         `endobj\n`,
     );
@@ -113,8 +136,8 @@ export function generatePdf(pages: PdfPage[]): Blob {
     out.bytes(page.imageBytes);
     out.ascii('\nendstream\nendobj\n');
 
-    // Content stream: `q w 0 0 h 0 0 cm /ImN Do Q` draws ImN scaled to w×h pt.
-    const content = `q ${widthPt} 0 0 ${heightPt} 0 0 cm /Im${i} Do Q`;
+    // Content stream: draw the image at its fitted size, then center it.
+    const content = `q ${drawnWidthPt.toFixed(2)} 0 0 ${drawnHeightPt.toFixed(2)} ${x} ${y} cm /Im${i} Do Q`;
     objectOffsets.push(out.length);
     out.ascii(
       `${contentObj} 0 obj\n<< /Length ${content.length} >>\nstream\n${content}\nendstream\nendobj\n`,
@@ -134,11 +157,6 @@ export function generatePdf(pages: PdfPage[]): Blob {
   );
 
   return new Blob([out.toUint8Array()], { type: 'application/pdf' });
-}
-
-/** Format a point value with two decimal places (PDF numbers). */
-function pt(pixels: number): string {
-  return (pixels * PX_TO_PT).toFixed(2);
 }
 
 /** Growable byte accumulator that tracks the running length for xref offsets. */
