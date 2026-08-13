@@ -41,6 +41,24 @@
   pointer-events: none;
 }
 
+.snapscribe-hint {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2147483647;
+  padding: 6px 12px;
+  font:
+    12px/1.4 system-ui,
+    sans-serif;
+  color: #fff;
+  background: #171a21;
+  border: 1px solid #6366f1;
+  border-radius: 999px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
 .snapscribe-toast {
   position: fixed;
   right: 16px;

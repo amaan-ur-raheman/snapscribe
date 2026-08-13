@@ -9,6 +9,7 @@
  * respond.
  */
 
+import overlayCss from './overlay.css?inline';
 import { buildFilename } from '../lib/filename';
 import { loadImage } from '../lib/image';
 import { getSettings } from '../lib/storage';
@@ -48,6 +49,13 @@ let hiddenStyle: HTMLStyleElement | null = null;
 let initialScrollY = 0;
 let hasInitialized = false;
 let toastTimer: number | undefined;
+
+// Inject the overlay styles ourselves — chrome.scripting.executeScript (the
+// stale-tab fallback) injects only the script, never the manifest CSS, so a
+// bare content script has to be self-styling.
+const overlayStyle = document.createElement('style');
+overlayStyle.textContent = overlayCss;
+(document.head ?? document.documentElement).appendChild(overlayStyle);
 
 chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
   if (!isContentRequest(message)) return; // not addressed to the content script
@@ -212,7 +220,10 @@ function selectRegion(): Promise<SimpleOkResponse> {
     const sizeLabel = document.createElement('div');
     sizeLabel.className = 'snapscribe-size-label';
     sizeLabel.style.display = 'none';
-    overlay.append(selection, sizeLabel);
+    const hint = document.createElement('div');
+    hint.className = 'snapscribe-hint';
+    hint.textContent = 'Drag to select — Esc to cancel';
+    overlay.append(selection, sizeLabel, hint);
     document.documentElement.appendChild(overlay);
 
     let dragStart: { x: number; y: number } | null = null;
@@ -297,7 +308,10 @@ function pickElement(): Promise<SimpleOkResponse> {
     const highlight = document.createElement('div');
     highlight.className = 'snapscribe-highlight';
     highlight.style.display = 'none';
-    document.documentElement.appendChild(highlight);
+    const hint = document.createElement('div');
+    hint.className = 'snapscribe-hint';
+    hint.textContent = 'Click an element — Esc to cancel';
+    document.documentElement.append(highlight, hint);
 
     let rect: Rect | null = null;
     let finished = false;
@@ -343,6 +357,7 @@ function pickElement(): Promise<SimpleOkResponse> {
       document.removeEventListener('click', onClick, true);
       window.removeEventListener('keydown', onKeyDown);
       highlight.remove();
+      hint.remove();
     };
   });
 }
