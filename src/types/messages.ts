@@ -2,7 +2,7 @@
  * Typed message contracts for SnapScribe.
  *
  * Three directions, three unions, one file:
- * - `RuntimeRequest` — popup / editor → service worker
+ * - `RuntimeRequest` — popup / editor / content script → service worker
  * - `ContentRequest` — service worker → content script
  * - Responses, typed per request via `ResponseFor` / `ContentResponseFor`
  *
@@ -13,7 +13,7 @@
 export type ExportFormat = 'png' | 'jpeg' | 'pdf';
 
 // ---------------------------------------------------------------------------
-// Requests sent to the service worker (popup / editor → worker)
+// Requests sent to the service worker (popup / editor / content script → worker)
 // ---------------------------------------------------------------------------
 
 /** Capture the visible viewport of a tab. (Phase 1) */
@@ -29,16 +29,21 @@ export interface CaptureFullPageMsg {
   tabId: number;
 }
 
-/** Capture a user-selected region of the page. (Phase 3) */
-export interface CaptureRegionMsg {
-  type: 'CAPTURE_REGION';
+/** Ask the page's content script to start a region drag-select. (Phase 3) */
+export interface StartRegionSelectionMsg {
+  type: 'START_REGION_SELECTION';
   tabId: number;
 }
 
-/** Capture a user-picked DOM element. (Phase 3) */
-export interface CaptureElementMsg {
-  type: 'CAPTURE_ELEMENT';
+/** Ask the page's content script to start element picking. (Phase 3) */
+export interface StartElementSelectionMsg {
+  type: 'START_ELEMENT_SELECTION';
   tabId: number;
+}
+
+/** Capture the current viewport and return the raw PNG data URL. (Phase 3) */
+export interface CaptureViewportMsg {
+  type: 'CAPTURE_VIEWPORT';
 }
 
 /** Export an existing capture through chrome.downloads. (Phase 1) */
@@ -53,8 +58,9 @@ export interface DownloadCaptureMsg {
 export type RuntimeRequest =
   | CaptureVisibleMsg
   | CaptureFullPageMsg
-  | CaptureRegionMsg
-  | CaptureElementMsg
+  | StartRegionSelectionMsg
+  | StartElementSelectionMsg
+  | CaptureViewportMsg
   | DownloadCaptureMsg;
 
 // ---------------------------------------------------------------------------
@@ -78,7 +84,18 @@ export interface FullPageRestoreMsg {
   type: 'FULL_PAGE_RESTORE';
 }
 
-export type ContentRequest = FullPagePrepareMsg | FullPageScrollMsg | FullPageRestoreMsg;
+/** Enter region drag-select mode; resolves when the user finishes. (Phase 3) */
+export interface RegionSelectMsg {
+  type: 'REGION_SELECT';
+}
+
+/** Enter element-picker mode; resolves when the user clicks an element. (Phase 3) */
+export interface ElementSelectMsg {
+  type: 'ELEMENT_SELECT';
+}
+
+export type ContentRequest =
+  FullPagePrepareMsg | FullPageScrollMsg | FullPageRestoreMsg | RegionSelectMsg | ElementSelectMsg;
 
 // ---------------------------------------------------------------------------
 // Responses
@@ -110,13 +127,16 @@ export type PrepareResponse =
 
 export type ScrollResponse = { ok: true; scrollY: number } | { ok: false; error: string };
 
-export type RestoreResponse = { ok: true } | { ok: false; error: string };
+/** Generic ok/error used where the caller does not inspect a payload. */
+export type SimpleOkResponse = { ok: true } | { ok: false; error: string };
 
 export type ContentResponseFor<M extends ContentRequest> = M extends { type: 'FULL_PAGE_PREPARE' }
   ? PrepareResponse
   : M extends { type: 'FULL_PAGE_SCROLL' }
     ? ScrollResponse
-    : RestoreResponse;
+    : M extends { type: 'FULL_PAGE_RESTORE' | 'REGION_SELECT' | 'ELEMENT_SELECT' }
+      ? SimpleOkResponse
+      : never;
 
 /** Shape shared by every successful capture, whatever the source. */
 export interface CaptureResult {
@@ -137,6 +157,9 @@ export interface CaptureResult {
 export type CaptureResponse = { ok: true; result: CaptureResult } | { ok: false; error: string };
 
 export type DownloadResponse = { ok: true; downloadId?: number } | { ok: false; error: string };
+
+/** Raw viewport capture for the content script to crop. (Phase 3) */
+export type ViewportCaptureResponse = { ok: true; dataUrl: string } | { ok: false; error: string };
 
 /** One stitched strip: its image and where to draw it (device pixels). */
 export interface StitchedStrip {
@@ -172,18 +195,25 @@ export type FullPageCaptureResponse =
   { ok: true; stitch: FullPageStitch } | { ok: false; error: string };
 
 /** Union of every response the service worker can send back. */
-export type RuntimeResponse = CaptureResponse | DownloadResponse | FullPageCaptureResponse;
+export type RuntimeResponse =
+  | CaptureResponse
+  | DownloadResponse
+  | FullPageCaptureResponse
+  | ViewportCaptureResponse
+  | SimpleOkResponse;
 
 /** Maps a request type to the response the service worker will send back. */
-export type ResponseFor<T extends RuntimeRequest> = T extends {
-  type: 'CAPTURE_VISIBLE' | 'CAPTURE_REGION' | 'CAPTURE_ELEMENT';
-}
+export type ResponseFor<T extends RuntimeRequest> = T extends { type: 'CAPTURE_VISIBLE' }
   ? CaptureResponse
   : T extends { type: 'CAPTURE_FULL_PAGE' }
     ? FullPageCaptureResponse
     : T extends { type: 'DOWNLOAD_CAPTURE' }
       ? DownloadResponse
-      : never;
+      : T extends { type: 'CAPTURE_VIEWPORT' }
+        ? ViewportCaptureResponse
+        : T extends { type: 'START_REGION_SELECTION' | 'START_ELEMENT_SELECTION' }
+          ? SimpleOkResponse
+          : never;
 
 // ---------------------------------------------------------------------------
 // Guards + typed send helpers
@@ -192,8 +222,9 @@ export type ResponseFor<T extends RuntimeRequest> = T extends {
 const RUNTIME_REQUEST_TYPES = [
   'CAPTURE_VISIBLE',
   'CAPTURE_FULL_PAGE',
-  'CAPTURE_REGION',
-  'CAPTURE_ELEMENT',
+  'START_REGION_SELECTION',
+  'START_ELEMENT_SELECTION',
+  'CAPTURE_VIEWPORT',
   'DOWNLOAD_CAPTURE',
 ] as const;
 
@@ -201,6 +232,8 @@ const CONTENT_REQUEST_TYPES = [
   'FULL_PAGE_PREPARE',
   'FULL_PAGE_SCROLL',
   'FULL_PAGE_RESTORE',
+  'REGION_SELECT',
+  'ELEMENT_SELECT',
 ] as const;
 
 /** Narrow an unknown payload (from onMessage) to a RuntimeRequest. */
