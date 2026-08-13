@@ -12,14 +12,27 @@ export async function stitchFullPage(stitch: FullPageStitch): Promise<string> {
   canvas.height = stitch.height;
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Canvas 2D is not available');
+  ctx.imageSmoothingEnabled = false;
 
   // Opaque white backdrop so any missed pixels don't come out transparent.
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  for (const strip of stitch.strips) {
-    const image = await loadImage(strip.dataUrl);
-    ctx.drawImage(image, 0, strip.y);
+  const images = await Promise.all(stitch.strips.map((strip) => loadImage(strip.dataUrl)));
+  for (const [index, strip] of stitch.strips.entries()) {
+    const image = images[index];
+    if (!image || strip.sourceHeight <= 0) continue;
+    ctx.drawImage(
+      image,
+      0,
+      strip.sourceY,
+      image.width,
+      strip.sourceHeight,
+      0,
+      strip.destY,
+      image.width,
+      strip.sourceHeight,
+    );
   }
 
   // Fixed/sticky elements back on top, once, at their screen positions.

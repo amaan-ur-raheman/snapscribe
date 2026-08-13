@@ -10,7 +10,7 @@
  */
 
 import overlayCss from './overlay.css?inline';
-import { buildFilename } from '../lib/filename';
+import { buildFilename, extensionFor } from '../lib/filename';
 import { loadImage } from '../lib/image';
 import { getSettings } from '../lib/storage';
 import { isContentRequest, sendRuntimeRequest } from '../types/messages';
@@ -34,6 +34,7 @@ const TOAST_DURATION_MS = 3500;
 interface HiddenElement {
   el: HTMLElement;
   rect: DOMRect;
+  position: 'fixed' | 'sticky';
 }
 
 /** A rectangle in viewport CSS pixels. */
@@ -88,30 +89,36 @@ async function handleContentRequest(
 // Full-page helpers
 // ---------------------------------------------------------------------------
 
-function preparePage(): PrepareResponse {
-  const dpr = window.devicePixelRatio || 1;
-  const innerHeight = window.innerHeight;
-  const clientWidth = window.innerWidth;
-  const scrollHeight = Math.max(
-    document.documentElement.scrollHeight,
-    document.body?.scrollHeight ?? 0,
-  );
-
+async function preparePage(): Promise<PrepareResponse> {
   collectFixedAndSticky();
   hideFixedAndSticky();
+  await nextFrame();
+  await nextFrame();
+
+  const after = pageMeasurements();
 
   return {
     ok: true,
-    clientWidth,
-    innerHeight,
-    scrollHeight,
-    dpr,
-    fixedRects: hiddenElements.map(({ rect }) => ({
+    ...after,
+    fixedRects: hiddenElements.map(({ rect, position }) => ({
       x: rect.x,
       y: rect.y,
       width: rect.width,
       height: rect.height,
+      position,
     })),
+  };
+}
+
+function pageMeasurements(): Pick<
+  PrepareResponse & { ok: true },
+  'clientWidth' | 'innerHeight' | 'scrollHeight' | 'dpr'
+> {
+  return {
+    clientWidth: document.documentElement.clientWidth,
+    innerHeight: window.innerHeight,
+    scrollHeight: Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0),
+    dpr: window.devicePixelRatio || 1,
   };
 }
 
@@ -120,7 +127,9 @@ async function scrollToAndSettle(y: number): Promise<ScrollResponse> {
     initialScrollY = window.scrollY;
     hasInitialized = true;
   }
-  window.scrollTo({ top: y, behavior: 'instant' });
+  // Use the coordinate overload so page CSS cannot turn this into a smooth
+  // scroll and leave captureVisibleTab between two composited frames.
+  window.scrollTo(0, y);
   const settledY = await waitForScrollSettle();
   return { ok: true, scrollY: settledY };
 }
@@ -133,7 +142,7 @@ function restorePage(): SimpleOkResponse {
   for (const { el } of hiddenElements) el.removeAttribute(HIDDEN_ATTR);
   hiddenElements.length = 0;
   if (hasInitialized) {
-    window.scrollTo({ top: initialScrollY, behavior: 'instant' });
+    window.scrollTo(0, initialScrollY);
     hasInitialized = false;
   }
   return { ok: true };
@@ -157,7 +166,7 @@ function collectFixedAndSticky(): void {
     const rect = el.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) continue; // hidden or empty
     if (position === 'sticky' && !intersectsViewport(rect, viewport)) continue;
-    hiddenElements.push({ el, rect });
+    hiddenElements.push({ el, rect, position });
   }
 }
 
@@ -175,9 +184,14 @@ function intersectsViewport(
 
 /** Hide the collected elements with visibility (layout untouched). */
 function hideFixedAndSticky(): void {
-  if (hiddenElements.length === 0) return;
   hiddenStyle = document.createElement('style');
-  hiddenStyle.textContent = `[${HIDDEN_ATTR}]{visibility:hidden!important}`;
+  hiddenStyle.textContent =
+    `[${HIDDEN_ATTR}]{visibility:hidden!important}` +
+    `html{scrollbar-gutter:stable!important;scrollbar-color:transparent transparent!important}` +
+    `body{scrollbar-color:transparent transparent!important}` +
+    `html::-webkit-scrollbar-thumb,body::-webkit-scrollbar-thumb{background:transparent!important;border-color:transparent!important}` +
+    `html::-webkit-scrollbar-track,body::-webkit-scrollbar-track{background:transparent!important}` +
+    `*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}`;
   document.documentElement.appendChild(hiddenStyle);
   for (const { el } of hiddenElements) el.setAttribute(HIDDEN_ATTR, '');
 }
@@ -191,6 +205,10 @@ async function waitForScrollSettle(): Promise<number> {
     if (currentY === lastY) {
       // Stable for a frame — give lazy-loaded content time to render.
       await delay(LAZY_RENDER_DELAY_MS);
+      // captureVisibleTab can otherwise observe the pre-scroll compositor
+      // frame even after scrollY has stopped changing.
+      await nextFrame();
+      await nextFrame();
       return window.scrollY;
     }
     lastY = currentY;
@@ -428,8 +446,18 @@ async function completeSelectionCapture(rect: Rect): Promise<void> {
     }
     const dataUrl = await cropViewport(response.dataUrl, rect);
     const settings = await getSettings();
-    const filename = buildFilename(window.location.href, settings.filenamePattern, 'png');
-    const saved = await sendRuntimeRequest({ type: 'DOWNLOAD_CAPTURE', dataUrl, filename });
+    const filename = buildFilename(
+      window.location.href,
+      settings.filenamePattern,
+      extensionFor(settings.defaultFormat),
+    );
+    const saved = await sendRuntimeRequest({
+      type: 'DOWNLOAD_CAPTURE',
+      dataUrl,
+      filename,
+      format: settings.defaultFormat,
+      quality: settings.jpegQuality,
+    });
     showToast(saved.ok ? `Saved ${filename}` : saved.error, !saved.ok);
   } catch (err) {
     showToast(err instanceof Error ? err.message : String(err), true);

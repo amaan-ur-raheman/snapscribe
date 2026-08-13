@@ -49,10 +49,17 @@ export interface CaptureViewportMsg {
 /** Export an existing capture through chrome.downloads. (Phase 1) */
 export interface DownloadCaptureMsg {
   type: 'DOWNLOAD_CAPTURE';
-  /** PNG/JPEG data URL of the image to save. */
+  /** PNG data URL of the image to save. */
   dataUrl: string;
   /** Desired filename (extension included); sanitized by the receiver. */
   filename: string;
+  /**
+   * Export format. Omitted by legacy callers — the worker falls back to the
+   * user's default format setting. (Phase 4)
+   */
+  format?: ExportFormat;
+  /** JPEG quality, 0-100. Omitted by legacy callers — falls back to settings. (Phase 4) */
+  quality?: number;
 }
 
 export type RuntimeRequest =
@@ -107,6 +114,7 @@ export interface FixedRect {
   y: number;
   width: number;
   height: number;
+  position: 'fixed' | 'sticky';
 }
 
 export type PrepareResponse =
@@ -163,8 +171,12 @@ export type ViewportCaptureResponse = { ok: true; dataUrl: string } | { ok: fals
 
 /** One stitched strip: its image and where to draw it (device pixels). */
 export interface StitchedStrip {
-  /** Top edge of the strip in device pixels. */
-  y: number;
+  /** Top edge to draw this strip at, after trimming, in device pixels. */
+  destY: number;
+  /** Top of the source crop within the captured bitmap, in device pixels. */
+  sourceY: number;
+  /** Height of the source crop, in device pixels. */
+  sourceHeight: number;
   /** PNG data URL of the strip. */
   dataUrl: string;
 }
@@ -219,35 +231,61 @@ export type ResponseFor<T extends RuntimeRequest> = T extends { type: 'CAPTURE_V
 // Guards + typed send helpers
 // ---------------------------------------------------------------------------
 
-const RUNTIME_REQUEST_TYPES = [
-  'CAPTURE_VISIBLE',
-  'CAPTURE_FULL_PAGE',
-  'START_REGION_SELECTION',
-  'START_ELEMENT_SELECTION',
-  'CAPTURE_VIEWPORT',
-  'DOWNLOAD_CAPTURE',
-] as const;
-
-const CONTENT_REQUEST_TYPES = [
-  'FULL_PAGE_PREPARE',
-  'FULL_PAGE_SCROLL',
-  'FULL_PAGE_RESTORE',
-  'REGION_SELECT',
-  'ELEMENT_SELECT',
-] as const;
-
 /** Narrow an unknown payload (from onMessage) to a RuntimeRequest. */
 export function isRuntimeRequest(value: unknown): value is RuntimeRequest {
-  if (typeof value !== 'object' || value === null) return false;
-  const type = (value as { type?: unknown }).type;
-  return typeof type === 'string' && (RUNTIME_REQUEST_TYPES as readonly string[]).includes(type);
+  if (!isRecord(value)) return false;
+  switch (value.type) {
+    case 'CAPTURE_VISIBLE':
+    case 'CAPTURE_FULL_PAGE':
+    case 'START_REGION_SELECTION':
+    case 'START_ELEMENT_SELECTION':
+      return isTabId(value.tabId);
+    case 'CAPTURE_VIEWPORT':
+      return true;
+    case 'DOWNLOAD_CAPTURE':
+      return (
+        typeof value.dataUrl === 'string' &&
+        value.dataUrl.startsWith('data:image/') &&
+        typeof value.filename === 'string' &&
+        value.filename.length > 0 &&
+        (value.format === undefined || isExportFormat(value.format)) &&
+        (value.quality === undefined ||
+          (typeof value.quality === 'number' &&
+            Number.isFinite(value.quality) &&
+            value.quality >= 0 &&
+            value.quality <= 100))
+      );
+    default:
+      return false;
+  }
 }
 
 /** Narrow an unknown payload (from onMessage) to a ContentRequest. */
 export function isContentRequest(value: unknown): value is ContentRequest {
-  if (typeof value !== 'object' || value === null) return false;
-  const type = (value as { type?: unknown }).type;
-  return typeof type === 'string' && (CONTENT_REQUEST_TYPES as readonly string[]).includes(type);
+  if (!isRecord(value)) return false;
+  switch (value.type) {
+    case 'FULL_PAGE_PREPARE':
+    case 'FULL_PAGE_RESTORE':
+    case 'REGION_SELECT':
+    case 'ELEMENT_SELECT':
+      return true;
+    case 'FULL_PAGE_SCROLL':
+      return typeof value.y === 'number' && Number.isFinite(value.y) && value.y >= 0;
+    default:
+      return false;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isTabId(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+function isExportFormat(value: unknown): value is ExportFormat {
+  return value === 'png' || value === 'jpeg' || value === 'pdf';
 }
 
 /**
