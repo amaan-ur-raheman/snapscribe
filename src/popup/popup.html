@@ -7,10 +7,32 @@
     <link rel="stylesheet" href="./popup.css" />
   </head>
   <body>
-    <main class="placeholder">
+    <header class="header">
       <h1>SnapScribe</h1>
-      <p>Capture tools are under construction.</p>
-    </main>
+      <p class="tagline">On-device screenshot capture</p>
+    </header>
+
+    <section class="modes" aria-label="Capture modes">
+      <button id="capture-visible" class="mode mode-primary" type="button">Visible area</button>
+      <button class="mode" type="button" disabled title="Full-page capture arrives in a later phase">Full page</button>
+      <button class="mode" type="button" disabled title="Region capture arrives in a later phase">Region</button>
+      <button class="mode" type="button" disabled title="Element capture arrives in a later phase">Element</button>
+    </section>
+
+    <section id="result" class="result hidden">
+      <img id="preview" alt="Capture preview" />
+      <div class="meta">
+        <span id="meta-dimensions"></span>
+        <span id="meta-site"></span>
+      </div>
+    </section>
+
+    <div class="actions">
+      <button id="download" class="action" type="button" disabled>Download PNG</button>
+    </div>
+
+    <p id="status" class="status" role="status"></p>
+
     <script type="module" src="./popup.ts"></script>
   </body>
 </html>
