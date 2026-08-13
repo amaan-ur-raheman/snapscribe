@@ -19,6 +19,13 @@ export default defineManifest({
     service_worker: 'src/background/service-worker.ts',
     type: 'module',
   },
+  content_scripts: [
+    {
+      matches: ['<all_urls>'],
+      js: ['src/content/content-script.ts'],
+      run_at: 'document_idle',
+    },
+  ],
   action: {
     default_title: 'SnapScribe',
     default_popup: 'src/popup/popup.html',

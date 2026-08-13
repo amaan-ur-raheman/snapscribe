@@ -5,8 +5,20 @@
  */
 
 import { DEFAULT_SETTINGS } from '../lib/storage';
-import { isRuntimeRequest } from '../types/messages';
-import type { CaptureResponse, DownloadResponse, RuntimeRequest } from '../types/messages';
+import { isRuntimeRequest, sendContentRequest } from '../types/messages';
+import type {
+  CaptureResponse,
+  DownloadResponse,
+  FixedComposite,
+  FullPageCaptureResponse,
+  RuntimeRequest,
+  StitchedStrip,
+} from '../types/messages';
+
+/** Safety cap on the number of stitched strips (infinite-scroll guard). */
+const MAX_STRIPS = 100;
+/** Chrome's canvas area limit is ~268M pixels; keep margin for safety. */
+const MAX_TOTAL_PIXELS = 200_000_000;
 
 // Seed settings once so reads never return a partial object.
 chrome.runtime.onInstalled.addListener(() => {
@@ -30,10 +42,14 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
   return true; // keep the message channel open for the async response
 });
 
-async function handleRequest(msg: RuntimeRequest): Promise<CaptureResponse | DownloadResponse> {
+async function handleRequest(
+  msg: RuntimeRequest,
+): Promise<CaptureResponse | DownloadResponse | FullPageCaptureResponse> {
   switch (msg.type) {
     case 'CAPTURE_VISIBLE':
       return captureVisible(msg.tabId);
+    case 'CAPTURE_FULL_PAGE':
+      return captureFullPage(msg.tabId);
     case 'DOWNLOAD_CAPTURE':
       return downloadCapture(msg.dataUrl, msg.filename);
     // Remaining modes land in later phases; fail loudly rather than silently.
@@ -59,6 +75,105 @@ async function captureVisible(tabId: number): Promise<CaptureResponse> {
       timestamp: Date.now(),
     },
   };
+}
+
+/**
+ * Full-page capture: scroll the page one viewport at a time, capture each
+ * strip, and return everything the popup needs to stitch them.
+ *
+ * Fixed/sticky elements are hidden for the strip captures so they don't
+ * duplicate; the popup composites them back once from a reference strip
+ * captured before hiding. All coordinates are normalized to device pixels
+ * via the page's devicePixelRatio.
+ */
+async function captureFullPage(tabId: number): Promise<FullPageCaptureResponse> {
+  const tab = await chrome.tabs.get(tabId);
+  const windowId = tab.windowId;
+
+  try {
+    // 1. Start at the top of the page.
+    await sendContentRequest(tabId, { type: 'FULL_PAGE_SCROLL', y: 0 });
+
+    // 2. Reference strip with fixed/sticky elements still visible — it
+    //    supplies the pixels composited back over the clean stitch.
+    const reference = await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
+
+    // 3. Measure the page and hide fixed/sticky elements.
+    const prep = await sendContentRequest(tabId, { type: 'FULL_PAGE_PREPARE' });
+    if (!prep.ok) {
+      await sendContentRequest(tabId, { type: 'FULL_PAGE_RESTORE' });
+      return prep;
+    }
+    const { clientWidth, scrollHeight, innerHeight, dpr, fixedRects } = prep;
+
+    const width = Math.round(clientWidth * dpr);
+    const height = Math.round(scrollHeight * dpr);
+    if (width * height > MAX_TOTAL_PIXELS) {
+      await sendContentRequest(tabId, { type: 'FULL_PAGE_RESTORE' });
+      return {
+        ok: false,
+        error: `Page is too large to capture (${width} × ${height} device pixels exceeds the canvas limit).`,
+      };
+    }
+
+    // 4. Scroll + capture one strip per viewport, top to bottom.
+    const strips: StitchedStrip[] = [];
+    let y = 0;
+    let previousY = -1;
+    for (let i = 0; i < MAX_STRIPS; i++) {
+      const step = await sendContentRequest(tabId, { type: 'FULL_PAGE_SCROLL', y });
+      if (!step.ok) {
+        await sendContentRequest(tabId, { type: 'FULL_PAGE_RESTORE' });
+        return step;
+      }
+      if (i > 0 && step.scrollY <= previousY) break; // page won't scroll further
+      const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
+      strips.push({ y: Math.round(step.scrollY * dpr), dataUrl });
+      if (step.scrollY + innerHeight >= scrollHeight - 0.5) break; // reached the bottom
+      previousY = step.scrollY;
+      y = step.scrollY + innerHeight;
+    }
+
+    // 5. Put the page back the way we found it.
+    await sendContentRequest(tabId, { type: 'FULL_PAGE_RESTORE' });
+
+    if (strips.length === 0) {
+      return { ok: false, error: 'No strips were captured; the page may not be scrollable.' };
+    }
+
+    // 6. Fixed/sticky elements visible in the first viewport get composited
+    //    back once, cropped from the reference strip at their screen position.
+    const composites: FixedComposite[] = fixedRects
+      .filter((rect) => rect.y + rect.height > 0 && rect.y < innerHeight)
+      .map((rect) => ({
+        x: Math.round(rect.x * dpr),
+        y: Math.round(rect.y * dpr),
+        width: Math.round(rect.width * dpr),
+        height: Math.round(rect.height * dpr),
+        sourceDataUrl: reference,
+      }));
+
+    return {
+      ok: true,
+      stitch: {
+        width,
+        height,
+        dpr,
+        strips,
+        composites,
+        sourceUrl: tab.url ?? '',
+        timestamp: Date.now(),
+      },
+    };
+  } catch (err) {
+    // Best-effort cleanup so the page isn't left with hidden headers.
+    try {
+      await sendContentRequest(tabId, { type: 'FULL_PAGE_RESTORE' });
+    } catch {
+      // Tab may have closed — nothing more we can do.
+    }
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 async function downloadCapture(dataUrl: string, filename: string): Promise<DownloadResponse> {
