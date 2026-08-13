@@ -4,13 +4,16 @@
  * RuntimeRequest union; responses are typed and always `{ ok: true | false }`.
  */
 
-import { DEFAULT_SETTINGS } from '../lib/storage';
+import { extensionFor } from '../lib/filename';
+import { generatePdf, splitIntoPdfPages } from '../lib/pdf-generator';
+import { DEFAULT_SETTINGS, getSettings } from '../lib/storage';
 import { isRuntimeRequest, sendContentRequest } from '../types/messages';
 import type {
   CaptureResponse,
   ContentRequest,
   ContentResponseFor,
   DownloadResponse,
+  ExportFormat,
   FixedComposite,
   FullPageCaptureResponse,
   RuntimeRequest,
@@ -76,7 +79,7 @@ async function handleRequest(
     case 'CAPTURE_VIEWPORT':
       return captureViewport(senderTabId);
     case 'DOWNLOAD_CAPTURE':
-      return downloadCapture(msg.dataUrl, msg.filename);
+      return downloadCapture(msg.dataUrl, msg.filename, msg.format, msg.quality);
   }
 }
 
@@ -273,10 +276,102 @@ async function ensureContentScript(tabId: number): Promise<void> {
   }
 }
 
-async function downloadCapture(dataUrl: string, filename: string): Promise<DownloadResponse> {
-  const safeFilename = sanitizeFilename(filename);
-  const downloadId = await chrome.downloads.download({ url: dataUrl, filename: safeFilename });
-  return { ok: true, downloadId };
+async function downloadCapture(
+  dataUrl: string,
+  filename: string,
+  format?: ExportFormat,
+  quality?: number,
+): Promise<DownloadResponse> {
+  // Format/quality fall back to the user's settings when the caller omits
+  // them (legacy flows like the content-script toast path).
+  const settings = await getSettings();
+  const resolvedFormat = format ?? settings.defaultFormat;
+  const resolvedQuality = (quality ?? settings.jpegQuality) / 100;
+  const safeFilename = sanitizeFilename(withExtension(filename, extensionFor(resolvedFormat)));
+
+  let temporaryUrl: string | null = null;
+  try {
+    const { url, temporary } = await exportToDownloadUrl(dataUrl, resolvedFormat, resolvedQuality);
+    if (temporary) temporaryUrl = url;
+    const downloadId = await chrome.downloads.download({ url, filename: safeFilename });
+    // Blob URLs must be revoked once the download has consumed them.
+    if (temporaryUrl) scheduleRevoke(downloadId, temporaryUrl);
+    return { ok: true, downloadId };
+  } catch (err) {
+    if (temporaryUrl) URL.revokeObjectURL(temporaryUrl);
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Produce a URL chrome.downloads can fetch for the requested format.
+ * PNG passes through as a data: URL; JPEG/PDF are converted in the worker
+ * via OffscreenCanvas, so no DOM is needed. PDF splits tall captures into
+ * one page per chunk.
+ */
+async function exportToDownloadUrl(
+  dataUrl: string,
+  format: ExportFormat,
+  quality: number,
+): Promise<{ url: string; temporary: boolean }> {
+  switch (format) {
+    case 'png':
+      return { url: dataUrl, temporary: false };
+    case 'jpeg': {
+      const bytes = await dataUrlToJpegBytes(dataUrl, quality);
+      return {
+        url: URL.createObjectURL(new Blob([bytes], { type: 'image/jpeg' })),
+        temporary: true,
+      };
+    }
+    case 'pdf': {
+      const pages = await splitIntoPdfPages(dataUrl, { quality });
+      return { url: URL.createObjectURL(generatePdf(pages)), temporary: true };
+    }
+  }
+}
+
+/** Re-encode a PNG data URL as JPEG bytes (white underlay for any alpha). */
+async function dataUrlToJpegBytes(
+  dataUrl: string,
+  quality: number,
+): Promise<Uint8Array<ArrayBuffer>> {
+  const bitmap = await createImageBitmap(await (await fetch(dataUrl)).blob());
+  try {
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('OffscreenCanvas 2D is not available');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bitmap, 0, 0);
+    const jpeg = await canvas.convertToBlob({ type: 'image/jpeg', quality });
+    return new Uint8Array(await jpeg.arrayBuffer());
+  } finally {
+    bitmap.close();
+  }
+}
+
+/** Replace any trailing extension with the export format's extension. */
+function withExtension(filename: string, ext: string): string {
+  return `${filename.replace(/\.[a-z0-9]+$/i, '')}.${ext}`;
+}
+
+/** Blob URLs backing a download, revoked once that download finishes/fails. */
+const pendingObjectUrls = new Map<number, string>();
+
+chrome.downloads.onChanged.addListener((delta) => {
+  const state = delta.state?.current;
+  if (state === 'complete' || state === 'interrupted') {
+    const url = pendingObjectUrls.get(delta.id);
+    if (url) {
+      URL.revokeObjectURL(url);
+      pendingObjectUrls.delete(delta.id);
+    }
+  }
+});
+
+function scheduleRevoke(downloadId: number, url: string): void {
+  pendingObjectUrls.set(downloadId, url);
 }
 
 /** Strip path separators / traversal so a filename can't escape the Downloads dir. */
