@@ -18,13 +18,11 @@ export interface PdfPage {
   heightPx: number;
 }
 
-/** Tall captures are split so no page exceeds this height in device pixels. */
-const MAX_PAGE_HEIGHT_PX = 2000;
-/** PDF unit conversion: 1 CSS/device px = 0.75 pt. */
-const PX_TO_PT = 0.75;
-/** A4 portrait in points (210 × 297 mm). Every PDF page is this size. */
-const A4_WIDTH_PT = 595.28;
-const A4_HEIGHT_PT = 841.89;
+/** Safety cap for a single page image in device pixels. */
+const MAX_PAGE_HEIGHT_PX = 4000;
+/** US Letter portrait in points (8.5 × 11 in). Every PDF page is this size. */
+const LETTER_WIDTH_PT = 612;
+const LETTER_HEIGHT_PT = 792;
 
 export interface SplitOptions {
   maxPageHeightPx?: number;
@@ -33,8 +31,9 @@ export interface SplitOptions {
 }
 
 /**
- * Decode a PNG data URL and slice it into JPEG pages, top to bottom.
- * A capture taller than `maxPageHeightPx` becomes one PDF page per chunk.
+ * Decode a PNG data URL and slice it into JPEG pages, top to bottom. Chunks
+ * match the Letter aspect ratio so adjacent PDF pages form one continuous image
+ * instead of independently scaled frames with large side margins.
  */
 export async function splitIntoPdfPages(
   dataUrl: string,
@@ -44,23 +43,24 @@ export async function splitIntoPdfPages(
   const bitmap = await createImageBitmap(await (await fetch(dataUrl)).blob());
   try {
     const { width, height } = bitmap;
-    const pageCount = Math.max(1, Math.ceil(height / maxPageHeightPx));
-    const pageHeight = Math.ceil(height / pageCount);
+    const letterPageHeightPx = (width * LETTER_HEIGHT_PT) / LETTER_WIDTH_PT;
+    const pageHeight = Math.max(1, Math.min(maxPageHeightPx, Math.floor(letterPageHeightPx)));
     const pages: PdfPage[] = [];
-    for (let i = 0; i < pageCount; i++) {
-      const canvas = new OffscreenCanvas(width, pageHeight);
+    for (let sourceY = 0; sourceY < height; sourceY += pageHeight) {
+      const chunkHeight = Math.min(pageHeight, height - sourceY);
+      const canvas = new OffscreenCanvas(width, chunkHeight);
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error('OffscreenCanvas 2D is not available');
       // White underlay: JPEG has no alpha channel, so transparent pixels
       // would otherwise turn black.
       ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, width, pageHeight);
-      ctx.drawImage(bitmap, 0, -i * pageHeight);
+      ctx.fillRect(0, 0, width, chunkHeight);
+      ctx.drawImage(bitmap, 0, -sourceY);
       const jpeg = await canvas.convertToBlob({ type: 'image/jpeg', quality });
       pages.push({
         imageBytes: new Uint8Array(await jpeg.arrayBuffer()),
         widthPx: width,
-        heightPx: pageHeight,
+        heightPx: chunkHeight,
       });
     }
     return pages;
@@ -70,7 +70,7 @@ export async function splitIntoPdfPages(
 }
 
 export interface PdfPageOptions {
-  /** Page size in points; defaults to A4 portrait (595.28 × 841.89). */
+  /** Page size in points; defaults to US Letter portrait (612 × 792). */
   pageWidthPt?: number;
   pageHeightPt?: number;
 }
@@ -78,15 +78,16 @@ export interface PdfPageOptions {
 /**
  * Assemble a minimal multi-page PDF from JPEG page images.
  *
- * Every page is an A4 sheet; each image is scaled to fit inside it (contain)
- * and centered, so any capture aspect ratio produces clean pages.
+ * Every page is a US Letter sheet and each image is drawn full-bleed across it. The
+ * source is already split at the Letter aspect ratio, so page boundaries remain
+ * continuous without margins or side whitespace.
  *
  * Object layout (N pages): 1 catalog, 2 page tree, then per page p:
  * 3p+3 Page, 3p+4 image XObject, 3p+5 content stream.
  */
 export function generatePdf(pages: PdfPage[], options: PdfPageOptions = {}): Blob {
-  const pageWidthPt = options.pageWidthPt ?? A4_WIDTH_PT;
-  const pageHeightPt = options.pageHeightPt ?? A4_HEIGHT_PT;
+  const pageWidthPt = options.pageWidthPt ?? LETTER_WIDTH_PT;
+  const pageHeightPt = options.pageHeightPt ?? LETTER_HEIGHT_PT;
   const out = new ByteWriter();
   const objectOffsets: number[] = [];
 
@@ -105,18 +106,7 @@ export function generatePdf(pages: PdfPage[], options: PdfPageOptions = {}): Blo
     const imageObj = pageObj + 1;
     const contentObj = pageObj + 2;
 
-    // Scale to fit the A4 sheet (contain) and center it on the page. The cm
-    // matrix must carry the DRAWN size in points (image pt × scale), not the
-    // scale factor — the image's unit square maps to exactly those points.
-    const imgWidthPt = page.widthPx * PX_TO_PT;
-    const imgHeightPt = page.heightPx * PX_TO_PT;
-    const scale = Math.min(pageWidthPt / imgWidthPt, pageHeightPt / imgHeightPt);
-    const drawnWidthPt = imgWidthPt * scale;
-    const drawnHeightPt = imgHeightPt * scale;
-    const x = ((pageWidthPt - drawnWidthPt) / 2).toFixed(2);
-    const y = ((pageHeightPt - drawnHeightPt) / 2).toFixed(2);
-
-    // Page object — every page is the same A4 MediaBox.
+    // Page object — every page is the same Letter MediaBox.
     objectOffsets.push(out.length);
     out.ascii(
       `${pageObj} 0 obj\n` +
@@ -136,8 +126,9 @@ export function generatePdf(pages: PdfPage[], options: PdfPageOptions = {}): Blo
     out.bytes(page.imageBytes);
     out.ascii('\nendstream\nendobj\n');
 
-    // Content stream: draw the image at its fitted size, then center it.
-    const content = `q ${drawnWidthPt.toFixed(2)} 0 0 ${drawnHeightPt.toFixed(2)} ${x} ${y} cm /Im${i} Do Q`;
+    // Content stream: fill the entire Letter page. The final slice may be scaled
+    // vertically to avoid introducing a blank band below the capture.
+    const content = `q ${pageWidthPt.toFixed(2)} 0 0 ${pageHeightPt.toFixed(2)} 0 0 cm /Im${i} Do Q`;
     objectOffsets.push(out.length);
     out.ascii(
       `${contentObj} 0 obj\n<< /Length ${content.length} >>\nstream\n${content}\nendstream\nendobj\n`,
