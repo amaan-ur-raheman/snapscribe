@@ -10,7 +10,7 @@
  */
 
 import overlayCss from './overlay.css?inline';
-import { buildFilename } from '../lib/filename';
+import { buildFilename, extensionFor } from '../lib/filename';
 import { loadImage } from '../lib/image';
 import { getSettings } from '../lib/storage';
 import { isContentRequest, sendRuntimeRequest } from '../types/messages';
@@ -428,8 +428,18 @@ async function completeSelectionCapture(rect: Rect): Promise<void> {
     }
     const dataUrl = await cropViewport(response.dataUrl, rect);
     const settings = await getSettings();
-    const filename = buildFilename(window.location.href, settings.filenamePattern, 'png');
-    const saved = await sendRuntimeRequest({ type: 'DOWNLOAD_CAPTURE', dataUrl, filename });
+    const filename = buildFilename(
+      window.location.href,
+      settings.filenamePattern,
+      extensionFor(settings.defaultFormat),
+    );
+    const saved = await sendRuntimeRequest({
+      type: 'DOWNLOAD_CAPTURE',
+      dataUrl,
+      filename,
+      format: settings.defaultFormat,
+      quality: settings.jpegQuality,
+    });
     showToast(saved.ok ? `Saved ${filename}` : saved.error, !saved.ok);
   } catch (err) {
     showToast(err instanceof Error ? err.message : String(err), true);
