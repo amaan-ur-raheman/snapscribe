@@ -1,15 +1,20 @@
 /**
- * Discriminated union of every message passed between the service worker,
- * the popup, the content script, and the editor via `chrome.runtime.sendMessage`.
+ * Typed message contracts for SnapScribe.
  *
- * New capture modes / export flows extend this union; every handler switches
- * exhaustively over `type`, so an unhandled message is a compile-time miss
- * instead of a silent no-op.
+ * Three directions, three unions, one file:
+ * - `RuntimeRequest` — popup / editor → service worker
+ * - `ContentRequest` — service worker → content script
+ * - Responses, typed per request via `ResponseFor` / `ContentResponseFor`
+ *
+ * Every handler switches exhaustively over `type`, so an unhandled message is
+ * a compile-time miss instead of a silent no-op.
  */
 
 export type ExportFormat = 'png' | 'jpeg' | 'pdf';
 
-// --- Requests (sent TO the service worker) ---
+// ---------------------------------------------------------------------------
+// Requests sent to the service worker (popup / editor → worker)
+// ---------------------------------------------------------------------------
 
 /** Capture the visible viewport of a tab. (Phase 1) */
 export interface CaptureVisibleMsg {
@@ -52,7 +57,66 @@ export type RuntimeRequest =
   | CaptureElementMsg
   | DownloadCaptureMsg;
 
-// --- Responses (sent back by the service worker) ---
+// ---------------------------------------------------------------------------
+// Requests sent to the content script (service worker → content script)
+// ---------------------------------------------------------------------------
+
+/** Measure the page and hide fixed/sticky elements for the strip captures. */
+export interface FullPagePrepareMsg {
+  type: 'FULL_PAGE_PREPARE';
+}
+
+/** Scroll the page to `y` (CSS px) and wait for it to settle. */
+export interface FullPageScrollMsg {
+  type: 'FULL_PAGE_SCROLL';
+  /** Target scroll position in CSS pixels. */
+  y: number;
+}
+
+/** Restore fixed/sticky elements and the original scroll position. */
+export interface FullPageRestoreMsg {
+  type: 'FULL_PAGE_RESTORE';
+}
+
+export type ContentRequest = FullPagePrepareMsg | FullPageScrollMsg | FullPageRestoreMsg;
+
+// ---------------------------------------------------------------------------
+// Responses
+// ---------------------------------------------------------------------------
+
+/** A fixed/sticky element's viewport rect in CSS px, captured before hiding. */
+export interface FixedRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export type PrepareResponse =
+  | {
+      ok: true;
+      /** Viewport width in CSS px (matches the captured strip width / dpr). */
+      clientWidth: number;
+      /** Total page height in CSS px. */
+      scrollHeight: number;
+      /** Viewport height in CSS px — one strip's worth of page. */
+      innerHeight: number;
+      /** Device pixel ratio of the page. */
+      dpr: number;
+      /** Fixed/sticky elements hidden for the capture, in viewport CSS px. */
+      fixedRects: FixedRect[];
+    }
+  | { ok: false; error: string };
+
+export type ScrollResponse = { ok: true; scrollY: number } | { ok: false; error: string };
+
+export type RestoreResponse = { ok: true } | { ok: false; error: string };
+
+export type ContentResponseFor<M extends ContentRequest> = M extends { type: 'FULL_PAGE_PREPARE' }
+  ? PrepareResponse
+  : M extends { type: 'FULL_PAGE_SCROLL' }
+    ? ScrollResponse
+    : RestoreResponse;
 
 /** Shape shared by every successful capture, whatever the source. */
 export interface CaptureResult {
@@ -74,40 +138,99 @@ export type CaptureResponse = { ok: true; result: CaptureResult } | { ok: false;
 
 export type DownloadResponse = { ok: true; downloadId?: number } | { ok: false; error: string };
 
+/** One stitched strip: its image and where to draw it (device pixels). */
+export interface StitchedStrip {
+  /** Top edge of the strip in device pixels. */
+  y: number;
+  /** PNG data URL of the strip. */
+  dataUrl: string;
+}
+
+/** A fixed/sticky element restored over the stitched page (device pixels). */
+export interface FixedComposite {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** Strip the element's pixels were cropped from (the pre-hide capture). */
+  sourceDataUrl: string;
+}
+
+/** Everything the popup needs to render the full-page image. */
+export interface FullPageStitch {
+  /** Canvas dimensions in device pixels. */
+  width: number;
+  height: number;
+  dpr: number;
+  strips: StitchedStrip[];
+  composites: FixedComposite[];
+  sourceUrl: string;
+  timestamp: number;
+}
+
+export type FullPageCaptureResponse =
+  { ok: true; stitch: FullPageStitch } | { ok: false; error: string };
+
 /** Union of every response the service worker can send back. */
-export type RuntimeResponse = CaptureResponse | DownloadResponse;
+export type RuntimeResponse = CaptureResponse | DownloadResponse | FullPageCaptureResponse;
 
 /** Maps a request type to the response the service worker will send back. */
 export type ResponseFor<T extends RuntimeRequest> = T extends {
-  type: 'CAPTURE_VISIBLE' | 'CAPTURE_FULL_PAGE' | 'CAPTURE_REGION' | 'CAPTURE_ELEMENT';
+  type: 'CAPTURE_VISIBLE' | 'CAPTURE_REGION' | 'CAPTURE_ELEMENT';
 }
   ? CaptureResponse
-  : T extends { type: 'DOWNLOAD_CAPTURE' }
-    ? DownloadResponse
-    : never;
+  : T extends { type: 'CAPTURE_FULL_PAGE' }
+    ? FullPageCaptureResponse
+    : T extends { type: 'DOWNLOAD_CAPTURE' }
+      ? DownloadResponse
+      : never;
+
+// ---------------------------------------------------------------------------
+// Guards + typed send helpers
+// ---------------------------------------------------------------------------
+
+const RUNTIME_REQUEST_TYPES = [
+  'CAPTURE_VISIBLE',
+  'CAPTURE_FULL_PAGE',
+  'CAPTURE_REGION',
+  'CAPTURE_ELEMENT',
+  'DOWNLOAD_CAPTURE',
+] as const;
+
+const CONTENT_REQUEST_TYPES = [
+  'FULL_PAGE_PREPARE',
+  'FULL_PAGE_SCROLL',
+  'FULL_PAGE_RESTORE',
+] as const;
 
 /** Narrow an unknown payload (from onMessage) to a RuntimeRequest. */
 export function isRuntimeRequest(value: unknown): value is RuntimeRequest {
   if (typeof value !== 'object' || value === null) return false;
   const type = (value as { type?: unknown }).type;
-  return (
-    typeof type === 'string' &&
-    [
-      'CAPTURE_VISIBLE',
-      'CAPTURE_FULL_PAGE',
-      'CAPTURE_REGION',
-      'CAPTURE_ELEMENT',
-      'DOWNLOAD_CAPTURE',
-    ].includes(type)
-  );
+  return typeof type === 'string' && (RUNTIME_REQUEST_TYPES as readonly string[]).includes(type);
+}
+
+/** Narrow an unknown payload (from onMessage) to a ContentRequest. */
+export function isContentRequest(value: unknown): value is ContentRequest {
+  if (typeof value !== 'object' || value === null) return false;
+  const type = (value as { type?: unknown }).type;
+  return typeof type === 'string' && (CONTENT_REQUEST_TYPES as readonly string[]).includes(type);
 }
 
 /**
- * Send a typed request and await the matching typed response.
+ * Send a typed request to the service worker and await its typed response.
  *
  * @types/chrome types sendMessage as `Promise<any>`; this cast is the single
  * narrowing point for the whole extension — every call site is fully typed.
  */
 export function sendRuntimeRequest<T extends RuntimeRequest>(msg: T): Promise<ResponseFor<T>> {
   return chrome.runtime.sendMessage(msg) as Promise<ResponseFor<T>>;
+}
+
+/** Send a typed request to a tab's content script and await its typed response. */
+export function sendContentRequest<T extends ContentRequest>(
+  tabId: number,
+  msg: T,
+): Promise<ContentResponseFor<T>> {
+  return chrome.tabs.sendMessage(tabId, msg) as Promise<ContentResponseFor<T>>;
 }
