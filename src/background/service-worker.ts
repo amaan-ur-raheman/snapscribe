@@ -4,9 +4,12 @@
  * RuntimeRequest union; responses are typed and always `{ ok: true | false }`.
  */
 
-import { extensionFor } from '../lib/filename';
+import { bytesToBase64 } from '../lib/base64';
+import { buildFilename, extensionFor } from '../lib/filename';
 import { generatePdf, splitIntoPdfPages } from '../lib/pdf-generator';
-import { DEFAULT_SETTINGS, getSettings } from '../lib/storage';
+import { stitchFullPageWorker } from '../lib/stitcher';
+import { addHistoryEntry, DEFAULT_SETTINGS, getSettings } from '../lib/storage';
+import { makeThumbnail } from '../lib/thumbnail';
 import { isRuntimeRequest, sendContentRequest } from '../types/messages';
 import type {
   CaptureResponse,
@@ -16,6 +19,7 @@ import type {
   ExportFormat,
   FixedComposite,
   FullPageCaptureResponse,
+  RecordHistoryMsg,
   RuntimeRequest,
   SimpleOkResponse,
   StitchedStrip,
@@ -40,13 +44,41 @@ const CONTENT_SCRIPT_RETRIES = 5;
 
 let lastCaptureAt = 0;
 
-// Seed settings once so reads never return a partial object.
+// Seed settings and register the right-click menu once.
 chrome.runtime.onInstalled.addListener(() => {
   void chrome.storage.local.get('settings').then((stored) => {
     if (!stored.settings) {
       void chrome.storage.local.set({ settings: DEFAULT_SETTINGS });
     }
   });
+  void chrome.contextMenus.removeAll().then(() => {
+    chrome.contextMenus.create({
+      id: 'capture-page',
+      title: 'Capture this page (SnapScribe)',
+      contexts: ['page'],
+    });
+    chrome.contextMenus.create({
+      id: 'capture-element',
+      title: 'Capture this element (SnapScribe)',
+      contexts: ['all'],
+    });
+  });
+});
+
+// Keyboard shortcuts (commands API) — capture the active tab and save
+// directly, no popup involved.
+chrome.commands.onCommand.addListener((command) => {
+  void handleCommand(command);
+});
+
+// Right-click menu items.
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (!tab?.id) return;
+  if (info.menuItemId === 'capture-page') {
+    void captureAndSave(tab.id, 'full');
+  } else if (info.menuItemId === 'capture-element') {
+    void startSelection(tab.id, 'ELEMENT_SELECT');
+  }
 });
 
 chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
@@ -92,6 +124,86 @@ async function handleRequest(
       return captureViewport(senderTabId);
     case 'DOWNLOAD_CAPTURE':
       return downloadCapture(msg.dataUrl, msg.filename, msg.format, msg.quality);
+    case 'RECORD_HISTORY':
+      return recordHistory(msg);
+  }
+}
+
+/**
+ * Commands API handler: Alt+Shift+S captures the visible area, Alt+Shift+F
+ * the full page. Both save through the default export settings.
+ */
+async function handleCommand(command: string): Promise<void> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return;
+  if (command === 'capture-visible') await captureAndSave(tab.id, 'visible');
+  else if (command === 'capture-full-page') await captureAndSave(tab.id, 'full');
+}
+
+/** Capture (visible or full page) and save it via the default settings. */
+async function captureAndSave(tabId: number, mode: 'visible' | 'full'): Promise<void> {
+  try {
+    const settings = await getSettings();
+    if (mode === 'visible') {
+      const response = await captureVisible(tabId);
+      if (!response.ok) return;
+      const result = response.result;
+      const filename = buildFilename(
+        result.sourceUrl,
+        settings.filenamePattern,
+        extensionFor(settings.defaultFormat),
+      );
+      await downloadCapture(result.dataUrl, filename, settings.defaultFormat, settings.jpegQuality);
+      await recordHistory({
+        type: 'RECORD_HISTORY',
+        dataUrl: result.dataUrl,
+        sourceUrl: result.sourceUrl,
+        width: result.width,
+        height: result.height,
+        dpr: result.dpr,
+        format: settings.defaultFormat,
+      });
+    } else {
+      const response = await captureFullPage(tabId);
+      if (!response.ok) return;
+      const dataUrl = await stitchFullPageWorker(response.stitch);
+      const filename = buildFilename(
+        response.stitch.sourceUrl,
+        settings.filenamePattern,
+        extensionFor(settings.defaultFormat),
+      );
+      await downloadCapture(dataUrl, filename, settings.defaultFormat, settings.jpegQuality);
+      await recordHistory({
+        type: 'RECORD_HISTORY',
+        dataUrl,
+        sourceUrl: response.stitch.sourceUrl,
+        width: response.stitch.width,
+        height: response.stitch.height,
+        dpr: response.stitch.dpr,
+        format: settings.defaultFormat,
+      });
+    }
+  } catch (err) {
+    console.error('[SnapScribe] Command/context capture failed:', err);
+  }
+}
+
+/** Generate a thumbnail and prepend the capture to history. */
+async function recordHistory(msg: RecordHistoryMsg): Promise<SimpleOkResponse> {
+  try {
+    const thumbnailDataUrl = await makeThumbnail(msg.dataUrl);
+    await addHistoryEntry({
+      thumbnailDataUrl,
+      width: msg.width,
+      height: msg.height,
+      dpr: msg.dpr,
+      format: msg.format,
+      timestamp: Date.now(),
+      sourceUrl: msg.sourceUrl,
+    });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -413,19 +525,6 @@ async function exportToDownloadUrl(
       return `data:application/pdf;base64,${bytesToBase64(bytes)}`;
     }
   }
-}
-
-/**
- * Base64-encode bytes for a data URL. Chunked so large captures don't blow
- * the call stack building one giant String.fromCharCode(...) argument list.
- */
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  const chunkSize = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-  }
-  return btoa(binary);
 }
 
 /** Re-encode a PNG data URL as JPEG bytes (white underlay for any alpha). */
