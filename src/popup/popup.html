@@ -55,6 +55,17 @@
       </section>
     </div>
 
+    <section id="history-section" class="history-section hidden" aria-label="Recent captures">
+      <div class="history-header">
+        <h2>Recent captures</h2>
+        <button id="history-clear" class="history-clear" type="button">Clear</button>
+      </div>
+      <div id="history-grid" class="history-grid"></div>
+      <p id="history-empty" class="history-empty hidden">
+        No captures yet — capture a page to see it here.
+      </p>
+    </section>
+
     <p id="status" class="status" role="status"></p>
 
     <script type="module" src="./popup.ts"></script>
