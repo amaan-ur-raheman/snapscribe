@@ -86,7 +86,7 @@ async function onSave(): Promise<void> {
       filenamePattern: filenamePatternInput.value.trim() || '{site}-{date}-{time}',
       theme: (themeInput?.value as 'light' | 'dark') ?? 'dark',
     });
-    setStatus('Settings saved ✓');
+    setStatus('Settings saved');
   } catch (error) {
     setStatus(error instanceof Error ? error.message : String(error), true);
   } finally {
