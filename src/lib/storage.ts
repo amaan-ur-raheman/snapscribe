@@ -24,7 +24,7 @@ export const DEFAULT_SETTINGS: SnapScribeSettings = {
   theme: 'dark',
 };
 
-/** A finished capture stored in history. (Read/write lands in Phase 6.) */
+/** A finished capture stored in history — thumbnail + metadata only. */
 export interface CaptureHistoryEntry {
   id: string;
   thumbnailDataUrl: string;
@@ -37,6 +37,9 @@ export interface CaptureHistoryEntry {
 }
 
 const SETTINGS_KEY = 'settings';
+const HISTORY_KEY = 'captureHistory';
+/** Keep the newest N captures so storage.local stays well under quota. */
+const MAX_HISTORY = 30;
 
 export async function getSettings(): Promise<SnapScribeSettings> {
   const stored = await chrome.storage.local.get(SETTINGS_KEY);
@@ -64,6 +67,31 @@ export async function setSettings(patch: Partial<SnapScribeSettings>): Promise<v
   await chrome.storage.local.set({ [SETTINGS_KEY]: { ...current, ...patch } });
 }
 
+export async function getHistory(): Promise<CaptureHistoryEntry[]> {
+  const stored = await chrome.storage.local.get(HISTORY_KEY);
+  const raw = stored[HISTORY_KEY];
+  return Array.isArray(raw) ? raw.filter(isHistoryEntry) : [];
+}
+
+/** Prepend a capture (newest first) and cap the list length. */
+export async function addHistoryEntry(
+  entry: Omit<CaptureHistoryEntry, 'id'>,
+): Promise<CaptureHistoryEntry> {
+  const id = crypto.randomUUID();
+  const next = [{ ...entry, id }, ...(await getHistory())].slice(0, MAX_HISTORY);
+  await chrome.storage.local.set({ [HISTORY_KEY]: next });
+  return { ...entry, id };
+}
+
+export async function removeHistoryEntry(id: string): Promise<void> {
+  const next = (await getHistory()).filter((entry) => entry.id !== id);
+  await chrome.storage.local.set({ [HISTORY_KEY]: next });
+}
+
+export async function clearHistory(): Promise<void> {
+  await chrome.storage.local.remove(HISTORY_KEY);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -72,5 +100,14 @@ function isExportFormat(value: unknown): value is ExportFormat {
   return value === 'png' || value === 'jpeg' || value === 'pdf';
 }
 
-// Capture history (list / add / clear) is implemented in Phase 6 using a
-// `captureHistory` key and the CaptureHistoryEntry schema above.
+function isHistoryEntry(value: unknown): value is CaptureHistoryEntry {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === 'string' &&
+    typeof value.thumbnailDataUrl === 'string' &&
+    typeof value.width === 'number' &&
+    typeof value.height === 'number' &&
+    typeof value.timestamp === 'number' &&
+    typeof value.sourceUrl === 'string'
+  );
+}

@@ -62,13 +62,26 @@ export interface DownloadCaptureMsg {
   quality?: number;
 }
 
+/** Record a finished capture into history (thumbnail + metadata). (Phase 6) */
+export interface RecordHistoryMsg {
+  type: 'RECORD_HISTORY';
+  /** PNG data URL whose thumbnail is stored. */
+  dataUrl: string;
+  sourceUrl: string;
+  width: number;
+  height: number;
+  dpr: number;
+  format: ExportFormat;
+}
+
 export type RuntimeRequest =
   | CaptureVisibleMsg
   | CaptureFullPageMsg
   | StartRegionSelectionMsg
   | StartElementSelectionMsg
   | CaptureViewportMsg
-  | DownloadCaptureMsg;
+  | DownloadCaptureMsg
+  | RecordHistoryMsg;
 
 // ---------------------------------------------------------------------------
 // Requests sent to the content script (service worker → content script)
@@ -225,7 +238,9 @@ export type ResponseFor<T extends RuntimeRequest> = T extends { type: 'CAPTURE_V
         ? ViewportCaptureResponse
         : T extends { type: 'START_REGION_SELECTION' | 'START_ELEMENT_SELECTION' }
           ? SimpleOkResponse
-          : never;
+          : T extends { type: 'RECORD_HISTORY' }
+            ? SimpleOkResponse
+            : never;
 
 // ---------------------------------------------------------------------------
 // Guards + typed send helpers
@@ -254,6 +269,16 @@ export function isRuntimeRequest(value: unknown): value is RuntimeRequest {
             Number.isFinite(value.quality) &&
             value.quality >= 0 &&
             value.quality <= 100))
+      );
+    case 'RECORD_HISTORY':
+      return (
+        typeof value.dataUrl === 'string' &&
+        value.dataUrl.startsWith('data:image/') &&
+        typeof value.sourceUrl === 'string' &&
+        typeof value.width === 'number' &&
+        typeof value.height === 'number' &&
+        typeof value.dpr === 'number' &&
+        isExportFormat(value.format)
       );
     default:
       return false;

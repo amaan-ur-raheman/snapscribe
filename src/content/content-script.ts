@@ -444,7 +444,7 @@ async function completeSelectionCapture(rect: Rect): Promise<void> {
       showToast(response.error, true);
       return;
     }
-    const dataUrl = await cropViewport(response.dataUrl, rect);
+    const crop = await cropViewport(response.dataUrl, rect);
     const settings = await getSettings();
     const filename = buildFilename(
       window.location.href,
@@ -453,19 +453,37 @@ async function completeSelectionCapture(rect: Rect): Promise<void> {
     );
     const saved = await sendRuntimeRequest({
       type: 'DOWNLOAD_CAPTURE',
-      dataUrl,
+      dataUrl: crop.dataUrl,
       filename,
       format: settings.defaultFormat,
       quality: settings.jpegQuality,
     });
+    if (saved.ok) {
+      // Record into capture history (thumbnail + metadata) in the background.
+      void sendRuntimeRequest({
+        type: 'RECORD_HISTORY',
+        dataUrl: crop.dataUrl,
+        sourceUrl: window.location.href,
+        width: crop.width,
+        height: crop.height,
+        dpr: window.devicePixelRatio || 1,
+        format: settings.defaultFormat,
+      }).catch(() => undefined);
+    }
     showToast(saved.ok ? `Saved ${filename}` : saved.error, !saved.ok);
   } catch (err) {
     showToast(err instanceof Error ? err.message : String(err), true);
   }
 }
 
-/** Crop the captured viewport (device pixels) to the selection (CSS px). */
-async function cropViewport(dataUrl: string, rect: Rect): Promise<string> {
+/**
+ * Crop the captured viewport (device pixels) to the selection (CSS px).
+ * Returns the cropped image plus its pixel dimensions.
+ */
+async function cropViewport(
+  dataUrl: string,
+  rect: Rect,
+): Promise<{ dataUrl: string; width: number; height: number }> {
   const dpr = window.devicePixelRatio || 1;
   const image = await loadImage(dataUrl);
   // Clamp the crop to the captured image: a selection that extends past the
@@ -483,7 +501,7 @@ async function cropViewport(dataUrl: string, rect: Rect): Promise<string> {
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Canvas 2D is not available');
   ctx.drawImage(image, -x, -y);
-  return canvas.toDataURL('image/png');
+  return { dataUrl: canvas.toDataURL('image/png'), width, height };
 }
 
 // ---------------------------------------------------------------------------

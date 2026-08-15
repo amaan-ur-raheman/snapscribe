@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SnapScribe Options</title>
+    <link rel="stylesheet" href="./options.css" />
+  </head>
+  <body>
+    <main class="options">
+      <header class="header">
+        <h1>SnapScribe</h1>
+        <p class="tagline">On-device screenshot capture — options</p>
+      </header>
+
+      <form id="options-form" class="form">
+        <section class="field">
+          <h2>Default export format</h2>
+          <div class="format-selector" role="group" aria-label="Default export format">
+            <button id="format-png" class="format-option" type="button" aria-pressed="true">
+              PNG
+            </button>
+            <button id="format-jpeg" class="format-option" type="button" aria-pressed="false">
+              JPEG
+            </button>
+            <button id="format-pdf" class="format-option" type="button" aria-pressed="false">
+              PDF
+            </button>
+          </div>
+        </section>
+
+        <section class="field">
+          <h2>JPEG / PDF quality</h2>
+          <div class="quality">
+            <input id="quality" type="range" min="1" max="100" value="90" />
+            <output id="quality-value" for="quality">90</output>
+          </div>
+        </section>
+
+        <section class="field">
+          <label for="filename-pattern">Filename pattern</label>
+          <input id="filename-pattern" class="text-input" type="text" spellcheck="false" />
+          <p class="hint">
+            Available tokens: <code>{site}</code> <code>{date}</code> <code>{time}</code>
+          </p>
+        </section>
+
+        <section class="field">
+          <h2>Theme</h2>
+          <div class="theme-options" role="radiogroup" aria-label="Theme">
+            <label class="theme-option">
+              <input type="radio" name="theme" value="dark" checked />
+              <span>Dark</span>
+            </label>
+            <label class="theme-option">
+              <input type="radio" name="theme" value="light" />
+              <span>Light</span>
+            </label>
+          </div>
+        </section>
+
+        <section class="field">
+          <h2>Capture history</h2>
+          <button id="clear-history" class="danger-button" type="button">
+            Clear all capture history
+          </button>
+        </section>
+
+        <div class="actions">
+          <p id="status" class="status" role="status"></p>
+          <button id="save" class="save-button" type="submit">Save</button>
+        </div>
+      </form>
+    </main>
+
+    <script type="module" src="./options.ts"></script>
+  </body>
+</html>

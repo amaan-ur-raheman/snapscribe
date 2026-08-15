@@ -1,7 +1,8 @@
 import { buildFilename, extensionFor, hostnameOf } from '../lib/filename';
 import { savePendingEdit } from '../lib/pending-edit';
 import { stitchFullPage } from '../lib/stitcher';
-import { getSettings } from '../lib/storage';
+import { clearHistory, getHistory, getSettings, removeHistoryEntry } from '../lib/storage';
+import type { CaptureHistoryEntry } from '../lib/storage';
 import { sendRuntimeRequest } from '../types/messages';
 import type { CaptureResult, ExportFormat } from '../types/messages';
 
@@ -30,6 +31,10 @@ const previewImage = $<HTMLImageElement>('preview');
 const dimensionsLabel = $<HTMLElement>('meta-dimensions');
 const siteLabel = $<HTMLElement>('meta-site');
 const statusLabel = $<HTMLElement>('status');
+const historySection = $<HTMLElement>('history-section');
+const historyGrid = $<HTMLElement>('history-grid');
+const historyEmpty = $<HTMLElement>('history-empty');
+const historyClearButton = $<HTMLButtonElement>('history-clear');
 
 /** Enough of a capture to preview and export. */
 type Presentable = Pick<CaptureResult, 'dataUrl' | 'width' | 'height' | 'sourceUrl'>;
@@ -45,6 +50,7 @@ captureElementButton.addEventListener('click', () => void onElementClick());
 editButton.addEventListener('click', () => void onEditClick());
 downloadButton.addEventListener('click', () => void onDownloadClick());
 copyButton.addEventListener('click', () => void onCopyClick());
+historyClearButton.addEventListener('click', () => void onClearHistoryClick());
 
 const formatButtons: Record<ExportFormat, HTMLButtonElement> = {
   png: formatPngButton,
@@ -60,14 +66,16 @@ qualityInput.addEventListener('input', () => {
   qualityValue.textContent = String(jpegQuality);
 });
 
-// Seed the export controls from the user's settings.
+// Seed the export controls from the user's settings and load history.
 void (async () => {
   const settings = await getSettings();
+  document.documentElement.dataset.theme = settings.theme;
   exportFormat = settings.defaultFormat;
   jpegQuality = settings.jpegQuality;
   qualityInput.value = String(jpegQuality);
   qualityValue.textContent = String(jpegQuality);
   selectFormat(exportFormat);
+  await renderHistory();
 })();
 
 async function onCaptureVisibleClick(): Promise<void> {
@@ -89,6 +97,7 @@ async function onCaptureVisibleClick(): Promise<void> {
       return;
     }
     presentCapture(response.result);
+    void recordCapture(response.result);
     setStatus('Captured ✓');
   } catch (error) {
     setStatus(errorMessage(error), true);
@@ -122,6 +131,15 @@ async function onCaptureFullPageClick(): Promise<void> {
       width: response.stitch.width,
       height: response.stitch.height,
       sourceUrl: response.stitch.sourceUrl,
+    });
+    void recordCapture({
+      dataUrl,
+      width: response.stitch.width,
+      height: response.stitch.height,
+      dpr: response.stitch.dpr,
+      sourceUrl: response.stitch.sourceUrl,
+      format: 'png',
+      timestamp: response.stitch.timestamp,
     });
     setStatus('Captured ✓');
   } catch (error) {
@@ -216,6 +234,80 @@ async function onDownloadClick(): Promise<void> {
 }
 
 /** Copy the raw capture to the system clipboard as a PNG. */
+/** Send the capture to the worker to be thumbnailed into history. */
+async function recordCapture(result: CaptureResult): Promise<void> {
+  try {
+    const response = await sendRuntimeRequest({
+      type: 'RECORD_HISTORY',
+      dataUrl: result.dataUrl,
+      sourceUrl: result.sourceUrl,
+      width: result.width,
+      height: result.height,
+      dpr: result.dpr,
+      format: result.format,
+    });
+    if (response.ok) await renderHistory();
+  } catch {
+    // History is best-effort — never block the capture on it.
+  }
+}
+
+async function onClearHistoryClick(): Promise<void> {
+  historyClearButton.disabled = true;
+  try {
+    await clearHistory();
+    await renderHistory();
+    setStatus('History cleared');
+  } catch (error) {
+    setStatus(errorMessage(error), true);
+  } finally {
+    historyClearButton.disabled = false;
+  }
+}
+
+/** Render the recent-captures strip (thumbnails + metadata). */
+async function renderHistory(): Promise<void> {
+  const entries = await getHistory();
+  historySection.classList.toggle('hidden', entries.length === 0);
+  historyEmpty.classList.toggle('hidden', entries.length > 0);
+  historyGrid.replaceChildren();
+
+  for (const entry of entries) {
+    const item = document.createElement('figure');
+    item.className = 'history-item';
+
+    const thumb = document.createElement('img');
+    thumb.src = entry.thumbnailDataUrl;
+    thumb.alt = `Capture from ${hostnameOf(entry.sourceUrl)}`;
+    thumb.loading = 'lazy';
+    item.appendChild(thumb);
+
+    const meta = document.createElement('figcaption');
+    meta.textContent = `${hostnameOf(entry.sourceUrl)} · ${formatTimestamp(entry.timestamp)}`;
+    item.appendChild(meta);
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'history-remove';
+    remove.textContent = '✕';
+    remove.title = 'Remove from history';
+    remove.addEventListener('click', () => void onRemoveHistoryClick(entry));
+    item.appendChild(remove);
+
+    historyGrid.appendChild(item);
+  }
+}
+
+async function onRemoveHistoryClick(entry: CaptureHistoryEntry): Promise<void> {
+  await removeHistoryEntry(entry.id);
+  await renderHistory();
+}
+
+function formatTimestamp(timestamp: number): string {
+  const date = new Date(timestamp);
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
 async function onCopyClick(): Promise<void> {
   if (!lastCapture) return;
   copyButton.disabled = true;
