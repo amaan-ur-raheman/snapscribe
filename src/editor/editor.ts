@@ -155,7 +155,7 @@ void (async () => {
     height = crop.height;
     commitState();
     syncResizeInputs();
-    setStatus('Ready — pick a tool to annotate, or crop / resize below.');
+    setStatus('Ready. Pick a tool to annotate, or crop / resize below.');
     updateDims();
     render();
   } catch (error) {
@@ -1037,7 +1037,7 @@ async function onCopyClick(): Promise<void> {
   try {
     const blob = await (await fetch(canvas.toDataURL('image/png'))).blob();
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-    setStatus('Copied to clipboard ✓');
+    setStatus('Copied');
   } catch (error) {
     setStatus(error instanceof Error ? error.message : String(error), true);
   } finally {

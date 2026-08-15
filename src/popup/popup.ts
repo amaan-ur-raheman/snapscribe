@@ -35,6 +35,7 @@ const historySection = $<HTMLElement>('history-section');
 const historyGrid = $<HTMLElement>('history-grid');
 const historyEmpty = $<HTMLElement>('history-empty');
 const historyClearButton = $<HTMLButtonElement>('history-clear');
+const openOptionsButton = $<HTMLButtonElement>('open-options');
 
 /** Enough of a capture to preview and export. */
 type Presentable = Pick<CaptureResult, 'dataUrl' | 'width' | 'height' | 'sourceUrl'>;
@@ -51,6 +52,7 @@ editButton.addEventListener('click', () => void onEditClick());
 downloadButton.addEventListener('click', () => void onDownloadClick());
 copyButton.addEventListener('click', () => void onCopyClick());
 historyClearButton.addEventListener('click', () => void onClearHistoryClick());
+openOptionsButton.addEventListener('click', () => void chrome.runtime.openOptionsPage());
 
 const formatButtons: Record<ExportFormat, HTMLButtonElement> = {
   png: formatPngButton,
@@ -98,7 +100,7 @@ async function onCaptureVisibleClick(): Promise<void> {
     }
     presentCapture(response.result);
     void recordCapture(response.result);
-    setStatus('Captured ✓');
+    setStatus('Captured');
   } catch (error) {
     setStatus(errorMessage(error), true);
   } finally {
@@ -141,7 +143,7 @@ async function onCaptureFullPageClick(): Promise<void> {
       format: 'png',
       timestamp: response.stitch.timestamp,
     });
-    setStatus('Captured ✓');
+    setStatus('Captured');
   } catch (error) {
     setStatus(errorMessage(error), true);
   } finally {
@@ -289,8 +291,10 @@ async function renderHistory(): Promise<void> {
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.className = 'history-remove';
-    remove.textContent = '✕';
     remove.title = 'Remove from history';
+    remove.setAttribute('aria-label', 'Remove from history');
+    remove.innerHTML =
+      '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg>';
     remove.addEventListener('click', () => void onRemoveHistoryClick(entry));
     item.appendChild(remove);
 
@@ -314,7 +318,7 @@ async function onCopyClick(): Promise<void> {
   try {
     const blob = await (await fetch(lastCapture.dataUrl)).blob();
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-    setStatus('Copied to clipboard ✓');
+    setStatus('Copied');
   } catch (error) {
     setStatus(errorMessage(error), true);
   } finally {
