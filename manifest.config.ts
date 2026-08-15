@@ -10,7 +10,9 @@ const icons = {
 export default defineManifest({
   manifest_version: 3,
   name: 'SnapScribe',
-  version: '0.1.0',
+  version: '1.0.0',
+  // The UI relies on :has() and color-mix() (Chrome 105 / 111).
+  minimum_chrome_version: '111',
   description:
     'On-device screenshot capture for Chrome: visible area, full page, region, or element. Nothing leaves your browser.',
   permissions: ['activeTab', 'scripting', 'downloads', 'storage', 'contextMenus', 'clipboardWrite'],
