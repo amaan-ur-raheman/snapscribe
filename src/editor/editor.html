@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SnapScribe Editor</title>
+    <link rel="stylesheet" href="./editor.css" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <div class="toolbar-row">
+        <div class="tool-group" role="group" aria-label="Tools">
+          <button
+            id="tool-select"
+            class="tool"
+            type="button"
+            aria-pressed="true"
+            title="Select / move (V)"
+          >
+            Select
+          </button>
+          <button id="tool-crop" class="tool" type="button" aria-pressed="false" title="Crop (C)">
+            Crop
+          </button>
+          <button
+            id="tool-rect"
+            class="tool"
+            type="button"
+            aria-pressed="false"
+            title="Rectangle (R)"
+          >
+            Rect
+          </button>
+          <button id="tool-arrow" class="tool" type="button" aria-pressed="false" title="Arrow (A)">
+            Arrow
+          </button>
+          <button
+            id="tool-pen"
+            class="tool"
+            type="button"
+            aria-pressed="false"
+            title="Freehand pen (P)"
+          >
+            Pen
+          </button>
+          <button
+            id="tool-text"
+            class="tool"
+            type="button"
+            aria-pressed="false"
+            title="Text label (T)"
+          >
+            Text
+          </button>
+          <button
+            id="tool-highlight"
+            class="tool"
+            type="button"
+            aria-pressed="false"
+            title="Highlighter (H)"
+          >
+            Highlight
+          </button>
+          <button
+            id="tool-blur"
+            class="tool"
+            type="button"
+            aria-pressed="false"
+            title="Blur / redact (B)"
+          >
+            Blur
+          </button>
+        </div>
+        <div class="tool-group" role="group" aria-label="History">
+          <button id="undo" class="tool" type="button" title="Undo (Ctrl+Z)" disabled>
+            ↶ Undo
+          </button>
+          <button id="redo" class="tool" type="button" title="Redo (Ctrl+Shift+Z)" disabled>
+            ↷ Redo
+          </button>
+          <button id="clear" class="tool" type="button" title="Clear all annotations">Clear</button>
+        </div>
+        <div class="tool-group grow"></div>
+        <div class="tool-group" role="group" aria-label="Page">
+          <button id="close" class="tool" type="button" title="Close editor">✕ Close</button>
+        </div>
+      </div>
+
+      <div class="toolbar-row options-row">
+        <div id="color-group" class="option-group" role="group" aria-label="Color">
+          <span class="option-label">Color</span>
+          <div id="swatches" class="swatches"></div>
+        </div>
+        <div id="stroke-group" class="option-group hidden" role="group" aria-label="Stroke width">
+          <label class="option-label" for="stroke-width">Width</label>
+          <select id="stroke-width">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="4" selected>4</option>
+            <option value="8">8</option>
+          </select>
+        </div>
+        <div id="font-group" class="option-group hidden" role="group" aria-label="Font size">
+          <label class="option-label" for="font-size">Font</label>
+          <select id="font-size">
+            <option value="14">14</option>
+            <option value="18">18</option>
+            <option value="24" selected>24</option>
+            <option value="32">32</option>
+            <option value="48">48</option>
+          </select>
+        </div>
+        <div id="blur-group" class="option-group hidden" role="group" aria-label="Blur radius">
+          <label class="option-label" for="blur-radius">Radius</label>
+          <input id="blur-radius" type="range" min="2" max="40" value="12" />
+          <output id="blur-radius-value" for="blur-radius">12</output>
+        </div>
+        <div id="resize-group" class="option-group" role="group" aria-label="Resize">
+          <span class="option-label">Resize</span>
+          <input id="resize-width" class="num-input" type="number" min="1" step="1" />
+          <span class="dim-sep">×</span>
+          <input id="resize-height" class="num-input" type="number" min="1" step="1" />
+          <label class="lock-label" title="Lock aspect ratio">
+            <input id="resize-lock" type="checkbox" checked /> Lock
+          </label>
+          <button id="resize-apply" class="tool" type="button">Apply</button>
+        </div>
+        <div class="option-group grow"></div>
+        <div class="option-group" role="group" aria-label="Export format">
+          <div class="format-selector">
+            <button id="format-png" class="format-option" type="button" aria-pressed="true">
+              PNG
+            </button>
+            <button id="format-jpeg" class="format-option" type="button" aria-pressed="false">
+              JPEG
+            </button>
+            <button id="format-pdf" class="format-option" type="button" aria-pressed="false">
+              PDF
+            </button>
+          </div>
+          <label id="quality-row" class="quality hidden" for="quality">
+            <span>Quality</span>
+            <input id="quality" type="range" min="1" max="100" value="90" />
+            <output id="quality-value" for="quality">90</output>
+          </label>
+        </div>
+        <div class="option-group" role="group" aria-label="Export actions">
+          <button id="copy" class="tool" type="button" title="Copy to clipboard">Copy</button>
+          <button id="download" class="tool primary" type="button">Download PNG</button>
+        </div>
+      </div>
+    </header>
+
+    <main id="stage" class="stage">
+      <canvas id="canvas"></canvas>
+    </main>
+
+    <footer class="statusbar">
+      <span id="status" role="status"></span>
+      <span id="dims" class="dims"></span>
+    </footer>
+
+    <script type="module" src="./editor.ts"></script>
+  </body>
+</html>
