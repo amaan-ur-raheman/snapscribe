@@ -471,7 +471,7 @@ async function ensureContentScript(tabId: number): Promise<void> {
     await chrome.scripting.executeScript({ target: { tabId }, files: scripts });
   } catch {
     throw new Error(
-      'SnapScribe cannot run on this page — it may be a browser-internal page (chrome://, the Web Store) or the page may need a reload. Reload the page and try again.',
+      'SnapScribe cannot run on this page. It may be a browser-internal page (chrome://, the Web Store) or the page may need a reload. Reload the page and try again.',
     );
   }
 }

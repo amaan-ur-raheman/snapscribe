@@ -240,7 +240,7 @@ function selectRegion(): Promise<SimpleOkResponse> {
     sizeLabel.style.display = 'none';
     const hint = document.createElement('div');
     hint.className = 'snapscribe-hint';
-    hint.textContent = 'Drag to select — Esc to cancel';
+    hint.textContent = 'Drag to select (Esc to cancel)';
     overlay.append(selection, sizeLabel, hint);
     document.documentElement.appendChild(overlay);
 
@@ -328,7 +328,7 @@ function pickElement(): Promise<SimpleOkResponse> {
     highlight.style.display = 'none';
     const hint = document.createElement('div');
     hint.className = 'snapscribe-hint';
-    hint.textContent = 'Click an element — Esc to cancel';
+    hint.textContent = 'Click an element (Esc to cancel)';
     document.documentElement.append(highlight, hint);
 
     let rect: Rect | null = null;
