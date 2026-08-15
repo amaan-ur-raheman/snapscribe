@@ -7,5 +7,11 @@ export default defineConfig({
   plugins: [crx({ manifest })],
   build: {
     target: 'chrome110',
+    // Extra extension page beyond the manifest (the editor tab).
+    rollupOptions: {
+      input: {
+        editor: 'src/editor/editor.html',
+      },
+    },
   },
 });
