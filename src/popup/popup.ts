@@ -1,4 +1,5 @@
 import { buildFilename, extensionFor, hostnameOf } from '../lib/filename';
+import { savePendingEdit } from '../lib/pending-edit';
 import { stitchFullPage } from '../lib/stitcher';
 import { getSettings } from '../lib/storage';
 import { sendRuntimeRequest } from '../types/messages';
@@ -14,6 +15,7 @@ const captureVisibleButton = $<HTMLButtonElement>('capture-visible');
 const captureFullPageButton = $<HTMLButtonElement>('capture-full-page');
 const captureRegionButton = $<HTMLButtonElement>('capture-region');
 const captureElementButton = $<HTMLButtonElement>('capture-element');
+const editButton = $<HTMLButtonElement>('edit');
 const downloadButton = $<HTMLButtonElement>('download');
 const copyButton = $<HTMLButtonElement>('copy');
 const formatPngButton = $<HTMLButtonElement>('format-png');
@@ -40,6 +42,7 @@ captureVisibleButton.addEventListener('click', () => void onCaptureVisibleClick(
 captureFullPageButton.addEventListener('click', () => void onCaptureFullPageClick());
 captureRegionButton.addEventListener('click', () => void onRegionClick());
 captureElementButton.addEventListener('click', () => void onElementClick());
+editButton.addEventListener('click', () => void onEditClick());
 downloadButton.addEventListener('click', () => void onDownloadClick());
 copyButton.addEventListener('click', () => void onCopyClick());
 
@@ -158,6 +161,31 @@ async function beginSelection(
   window.setTimeout(() => window.close(), 60);
 }
 
+/** Hand the current capture to the editor in a new tab. */
+async function onEditClick(): Promise<void> {
+  if (!lastCapture) return;
+  editButton.disabled = true;
+  try {
+    const id = crypto.randomUUID();
+    await savePendingEdit({
+      id,
+      dataUrl: lastCapture.dataUrl,
+      sourceUrl: lastCapture.sourceUrl,
+      width: lastCapture.width,
+      height: lastCapture.height,
+      timestamp: Date.now(),
+    });
+    await chrome.tabs.create({
+      url: chrome.runtime.getURL('src/editor/editor.html') + `?id=${id}`,
+    });
+    setStatus('Opened in editor');
+  } catch (error) {
+    setStatus(errorMessage(error), true);
+  } finally {
+    editButton.disabled = false;
+  }
+}
+
 async function onDownloadClick(): Promise<void> {
   if (!lastCapture) return;
   const settings = await getSettings();
@@ -222,6 +250,7 @@ function presentCapture(result: Presentable): void {
   siteLabel.textContent = hostnameOf(result.sourceUrl);
   captureCard.classList.remove('hidden');
   resultSection.classList.remove('hidden');
+  editButton.disabled = false;
   downloadButton.disabled = false;
   copyButton.disabled = false;
 }

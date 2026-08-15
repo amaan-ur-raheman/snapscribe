@@ -54,7 +54,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
     sendResponse({ ok: false, error: 'Unknown message' });
     return;
   }
-  handleRequest(message, sender.tab?.id, sender.id)
+  handleRequest(message, sender.tab?.id, sender.id, sender.url)
     .then(sendResponse)
     .catch((err: unknown) =>
       sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) }),
@@ -66,6 +66,7 @@ async function handleRequest(
   msg: RuntimeRequest,
   senderTabId: number | undefined,
   senderId: string | undefined,
+  senderUrl: string | undefined,
 ): Promise<
   | CaptureResponse
   | DownloadResponse
@@ -75,16 +76,16 @@ async function handleRequest(
 > {
   switch (msg.type) {
     case 'CAPTURE_VISIBLE':
-      if (!isExtensionUiMessage(senderId, senderTabId)) return unauthorizedResponse();
+      if (!isExtensionUiMessage(senderId, senderTabId, senderUrl)) return unauthorizedResponse();
       return captureVisible(msg.tabId);
     case 'CAPTURE_FULL_PAGE':
-      if (!isExtensionUiMessage(senderId, senderTabId)) return unauthorizedResponse();
+      if (!isExtensionUiMessage(senderId, senderTabId, senderUrl)) return unauthorizedResponse();
       return captureFullPage(msg.tabId);
     case 'START_REGION_SELECTION':
-      if (!isExtensionUiMessage(senderId, senderTabId)) return unauthorizedResponse();
+      if (!isExtensionUiMessage(senderId, senderTabId, senderUrl)) return unauthorizedResponse();
       return startSelection(msg.tabId, 'REGION_SELECT');
     case 'START_ELEMENT_SELECTION':
-      if (!isExtensionUiMessage(senderId, senderTabId)) return unauthorizedResponse();
+      if (!isExtensionUiMessage(senderId, senderTabId, senderUrl)) return unauthorizedResponse();
       return startSelection(msg.tabId, 'ELEMENT_SELECT');
     case 'CAPTURE_VIEWPORT':
       if (senderTabId === undefined) return unauthorizedResponse();
@@ -97,8 +98,14 @@ async function handleRequest(
 function isExtensionUiMessage(
   senderId: string | undefined,
   senderTabId: number | undefined,
+  senderUrl: string | undefined,
 ): boolean {
-  return senderId === chrome.runtime.id && senderTabId === undefined;
+  if (senderId !== chrome.runtime.id) return false;
+  if (senderTabId !== undefined) {
+    // A tab-based sender is ours only if the tab shows our own page.
+    return senderUrl?.startsWith(chrome.runtime.getURL('')) ?? false;
+  }
+  return true;
 }
 
 function unauthorizedResponse(): { ok: false; error: string } {
