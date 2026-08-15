@@ -135,6 +135,9 @@ const params = new URLSearchParams(window.location.search);
 const editId = params.get('id');
 
 void (async () => {
+  // Apply the saved theme before rendering anything.
+  const { theme } = await getSettings();
+  document.documentElement.dataset.theme = theme;
   if (!editId) {
     setStatus('No capture was passed to the editor. Close this tab and capture again.', true);
     return;

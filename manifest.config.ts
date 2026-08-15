@@ -26,6 +26,17 @@ export default defineManifest({
       run_at: 'document_idle',
     },
   ],
+  options_page: 'src/options/options.html',
+  commands: {
+    'capture-visible': {
+      suggested_key: { default: 'Alt+Shift+S' },
+      description: 'Capture the visible area of the current tab',
+    },
+    'capture-full-page': {
+      suggested_key: { default: 'Alt+Shift+F' },
+      description: 'Capture the full current page',
+    },
+  },
   action: {
     default_title: 'SnapScribe',
     default_popup: 'src/popup/popup.html',

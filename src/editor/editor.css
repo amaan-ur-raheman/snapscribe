@@ -11,6 +11,19 @@
   --danger: #f87171;
 }
 
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #f4f5f8;
+  --surface: #ffffff;
+  --surface-2: #eef0f5;
+  --border: #d9dde5;
+  --text: #16181d;
+  --text-dim: #5b6372;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --danger: #dc2626;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -219,7 +232,6 @@ input[type='number'] {
 }
 
 /* ------------------------------------------------------------------- stage */
-
 .stage {
   flex: 1;
   min-height: 0;
@@ -228,7 +240,7 @@ input[type='number'] {
   justify-content: center;
   padding: 16px;
   overflow: auto;
-  background: radial-gradient(circle at 50% 40%, #1b1f2a 0%, var(--bg) 70%);
+  background: radial-gradient(circle at 50% 40%, var(--surface-2) 0%, var(--bg) 70%);
 }
 
 .stage canvas {
